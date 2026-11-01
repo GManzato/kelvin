@@ -1,0 +1,51 @@
+# Machine-specific IDE and build state
+.DS_Store
+.idea/
+.vscode/
+*.iml
+**/.gradle/
+**/.kotlin/
+**/build/
+local.properties
+
+# Signing material and local credentials: never publish
+keystore/
+keystore.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+.env
+.env.*
+
+# Generated distributions are attached to GitHub Releases, not committed
+/dist/
+*.apk
+*.aab
+*.apks
+*.dex
+*.class
+*.zip
+
+# Device-extracted vendor data and private design/planning workspace
+/CameraFiles/
+/design/
+/TODO.md
+
+# Local captures, compatibility reports and desktop-tool outputs
+/captures/
+/captures-trash/
+/*.png
+/*.jpg
+/*.jpeg
+*.f32
+*.u8
+kelvin-compatibility*.json
+
+# Python environments and bytecode
+.venv/
+venv/
+__pycache__/
+*.py[cod]

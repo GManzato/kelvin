@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Discover FLIR USB variants for compatibility reports. Only the known Lightning transport is opened. -->
+    <usb-device vendor-id="2507" />
+</resources>

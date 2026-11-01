@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- annotated images built for "Share image" in the capture viewer -->
+    <cache-path name="share" path="share/" />
+    <!-- recorded videos, shared as they are -->
+    <files-path name="captures" path="captures/" />
+    <!-- compatibility diagnostic reports -->
+    <cache-path name="diagnostics" path="diagnostics/" />
+</paths>
