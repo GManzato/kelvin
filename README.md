@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/kelvin-logo.svg" alt="Kelvin logo" width="480">
+</p>
+
 # Kelvin
 
 **Kelvin is an independent, unofficial thermal viewer for a specific camera model: the FLIR ONE for iPhone (Lightning, model 435-0004-01, USB `09cb:1996`), used on an Android phone through a Lightning-to-USB-C adapter.** It talks to the camera directly over USB, shows a live thermal, visible, blended or edge view with temperature readouts, and saves photos, video and timelapse logs on the phone. Nothing is uploaded automatically.
