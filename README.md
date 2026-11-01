@@ -15,7 +15,7 @@
 - Current version: **0.5** (`versionCode` 5), Android 10 (API 29) or newer, phone with USB host / OTG support.
 - Physically tested with a FLIR ONE Lightning (435-0004-01) through an adapter on a Samsung Galaxy S25 Ultra. That is the verified camera/phone combination; it is not a general compatibility guarantee. Other phones may work or may not; see [Compatibility](#compatibility).
 - This is **not** the iPhone app and does not run on iOS.
-- There is no permanent automated test suite yet. Earlier manual device checks do not establish compatibility with other cameras, phones, adapters or operating-system versions.
+- Hardware-free regression tests supplement manual device checks. Neither establishes compatibility with other cameras, phones, adapters or operating-system versions.
 
 ## License status
 
@@ -135,6 +135,40 @@ keyPassword=...
 
 A clone **cannot reproduce the maintained signing identity**. An APK you sign with your own key is a different build lineage: it cannot update an installed release signed with the maintainer's key (Android will refuse the update; you would have to uninstall first, which also removes the app's data). Use the debug build, which has its own package name, to avoid that clash.
 
+## Tests
+
+Run the Android JVM regression suite from `android/` with the same JDK and
+Android SDK setup used for builds:
+
+```sh
+./gradlew testDebugUnitTest
+```
+
+It covers thermal count conversion, portrait rotation and flips, visible-region
+scaling, saturation warnings, emissivity/reflected-temperature correction,
+alarm thresholds, box measurements, temperature units and byte-stream buffering.
+The reference temperatures protect the current conversion from regressions;
+they are not independent calibration or proof of measurement accuracy.
+
+Run the Python reference-driver protocol suite from the repository root:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install pyusb
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+These tests use an in-memory USB byte transport to exercise the real Python
+iAP2 parser: fragmented and coalesced packets, bad-header resynchronization,
+duplicate suppression, sequence wrap, detect/sync, resets and read timeouts.
+Only PyUSB is needed for this suite, not NumPy, Pillow, libusb or a camera.
+The Android and Python drivers are separate implementations: passing Python
+tests does not verify Android USB sessions.
+
+Neither suite accesses a physical camera. USB permissions, real connections,
+Compose interaction, diagnostics sharing and media capture still need
+device/emulator testing.
+
 ## Python USB research tools
 
 The repository root also holds the Python prototype used to work out the USB bring-up before it was ported to Kotlin. It is a research aid, not a supported product.
@@ -169,6 +203,7 @@ android/                           Gradle project (open this in Android Studio)
   app/src/main/AndroidManifest.xml
   app/src/main/res/                icons, colors, USB device filter, bundled fonts
   app/src/main/assets/font-licenses/  font copyright notices and license texts
+  app/src/test/java/              JVM thermal, units and byte-stream regression tests
   app/src/main/java/com/gilles/flirone/
     FlirCamera.kt                  USB driver for the tested Lightning transport
     Iap2Link.kt                    iAP2 link and session handling
@@ -181,6 +216,7 @@ android/                           Gradle project (open this in Android Studio)
     Prefs.kt, ThermalApp.kt, MainActivity.kt
     ui/                            Compose screens (live, gallery, viewer, compare, settings, ...)
 flirone_ios.py, iap2host.py, snap.py   Python research tools
+tests/test_iap2host.py             hardware-free Python iAP2 protocol regressions
 THIRD_PARTY_NOTICES.md             third-party licenses
 ```
 
@@ -190,7 +226,7 @@ Architecture: the Python code and the Kotlin app are **two independent ports** o
 
 - Support for additional cameras, only when proper factory calibration and thermal layout can be established.
 - Super-resolution or other upscaling is deferred; Kelvin makes no HD claim.
-- An automated regression test suite.
+- Device/emulator integration tests for connection lifecycle, diagnostics and media handling.
 
 ## Contributing and reports
 
