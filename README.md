@@ -12,7 +12,7 @@
 
 ## Status
 
-- Current version: **0.5** (`versionCode` 5), Android 10 (API 29) or newer, phone with USB host / OTG support.
+- Current version: **0.6** (`versionCode` 6), Android 10 (API 29) or newer, phone with USB host / OTG support.
 - Physically tested with a FLIR ONE Lightning (435-0004-01) through an adapter on a Samsung Galaxy S25 Ultra. That is the verified camera/phone combination; it is not a general compatibility guarantee. Other phones may work or may not; see [Compatibility](#compatibility).
 - This is **not** the iPhone app and does not run on iOS.
 - Hardware-free regression tests supplement manual device checks. Neither establishes compatibility with other cameras, phones, adapters or operating-system versions.
@@ -28,17 +28,19 @@ Third-party libraries and fonts used by the app keep their own licenses. See [TH
 No build is needed to try it:
 
 - Latest release page: <https://github.com/GManzato/kelvin/releases/latest>
-- Direct APK for version 0.5: <https://github.com/GManzato/kelvin/releases/download/v0.5/Kelvin-0.5.apk>
+- Direct APK for version 0.6: <https://github.com/GManzato/kelvin/releases/download/v0.6/Kelvin-0.6.apk>
 
 ### Install (sideload)
 
-1. Download `Kelvin-0.5.apk` on the phone (or copy it there).
+1. Download `Kelvin-0.6.apk` on the phone (or copy it there).
 2. Open it. Android will ask you to allow installs from the app you opened it with (browser or file manager); allow that for the install, then you can turn it off again. Wording differs between Android versions and phone makers.
 3. Android or Play Protect may warn about an app from outside the Play Store. Kelvin is not distributed through Google Play. Install only if you trust where you got the file.
 4. Connect the camera to the phone through a Lightning-to-USB-C adapter and press the camera's power button. Kelvin finds it on its own once it is powered on.
 5. Android shows **"Allow Kelvin to access FLIR ONE?"**. Tap OK. Tick *Always open Kelvin when FLIR ONE is connected* if you want Kelvin to launch whenever you plug the camera in. The live stream stays on the phone; sharing saved files or diagnostics is an explicit action.
 
-The release APK uses the package `com.gilles.flirone` (app name "Kelvin"). Debug builds you make yourself use `com.gilles.flirone.debug` ("Kelvin dev") and install next to it.
+The release APK uses the package `be.apexlab.kelvin` (app name "Kelvin"). Debug builds you make yourself use `be.apexlab.kelvin.debug` ("Kelvin dev") and install next to it.
+
+Versions up to 0.5 used the package `com.gilles.flirone`. Android treats 0.6 as a different app: it installs next to the old one instead of updating it, and settings and captures stored inside the old app are not carried over. Export anything you want to keep, then uninstall the old Kelvin.
 
 ## Features
 
@@ -204,7 +206,7 @@ android/                           Gradle project (open this in Android Studio)
   app/src/main/res/                icons, colors, USB device filter, bundled fonts
   app/src/main/assets/font-licenses/  font copyright notices and license texts
   app/src/test/java/              JVM thermal, units and byte-stream regression tests
-  app/src/main/java/com/gilles/flirone/
+  app/src/main/java/be/apexlab/kelvin/
     FlirCamera.kt                  USB driver for the tested Lightning transport
     Iap2Link.kt                    iAP2 link and session handling
     CameraController.kt            connection state, permission and model gating

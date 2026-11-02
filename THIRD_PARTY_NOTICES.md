@@ -69,7 +69,7 @@ project does not redistribute their sources.
 ## UI icons
 
 The interface stores geometric vector paths directly in
-`android/app/src/main/java/com/gilles/flirone/ui/Icons.kt`; no separate
+`android/app/src/main/java/be/apexlab/kelvin/ui/Icons.kt`; no separate
 icon-library package is bundled.
 
 ## Trademarks

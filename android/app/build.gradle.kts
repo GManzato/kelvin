@@ -8,15 +8,15 @@ plugins {
 }
 
 android {
-    namespace = "com.gilles.flirone"
+    namespace = "be.apexlab.kelvin"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.gilles.flirone"
+        applicationId = "be.apexlab.kelvin"
         minSdk = 29
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.5"
+        versionCode = 6
+        versionName = "0.6"
         manifestPlaceholders["appLabel"] = "Kelvin"
     }
 
