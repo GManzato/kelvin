@@ -166,7 +166,7 @@ private fun Tile(c: Capture, thumbs: MutableMap<String, Bitmap>, captures: Captu
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             Box(Modifier.size(6.dp).clip(CircleShape).background(C.Hot))
-            BasicText("${Units.t(c.max)}°", style = text(11.sp, FontWeight.SemiBold))
+            BasicText(if (c.max.isFinite()) "${Units.t(c.max)}°" else "—", style = text(11.sp, FontWeight.SemiBold))
         }
         if (c.kind != CaptureKind.Photo) Row(
             Modifier.align(Alignment.TopEnd).padding(6.dp).height(22.dp).clip(RoundedCornerShape(11.dp)).background(Color(0xB80B0B0F)).padding(start = 5.dp, end = 7.dp),

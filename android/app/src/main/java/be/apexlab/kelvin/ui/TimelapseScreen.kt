@@ -99,6 +99,10 @@ fun TimelapseScreen(id: String?, app: ThermalApp) {
                     val w = (img.width * scale).roundToInt(); val h = (img.height * scale).roundToInt()
                     drawImage(img, IntOffset.Zero, IntSize(img.width, img.height), IntOffset(((size.width - w) / 2).roundToInt(), ((size.height - h) / 2).roundToInt()), IntSize(w, h), filterQuality = FilterQuality.Low)
                 }
+                if (cur != null && cur.validCount == 0) Box(
+                    Modifier.align(Alignment.Center).clip(RoundedCornerShape(15.dp)).background(Color(0xB30B0B0F)).padding(horizontal = 14.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) { BasicText("No valid temperatures in this frame", style = text(13.sp, FontWeight.SemiBold, C.Warning)) }
                 Box(Modifier.fillMaxWidth().height(110.dp).background(Brush.verticalGradient(listOf(Color(0xD10B0B0F), Color.Transparent))))
                 Row(Modifier.fillMaxWidth().statusBarsPadding().padding(start = 4.dp, end = 8.dp).height(48.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(44.dp).tap { ui.back() }, contentAlignment = Alignment.Center) { Icon(Ic.Back, C.Text, 22.dp) }
@@ -130,10 +134,12 @@ fun TimelapseScreen(id: String?, app: ThermalApp) {
                 )
                 Row(Modifier.padding(start = 20.dp, top = 2.dp), verticalAlignment = Alignment.Bottom) {
                     BasicText(Units.t(cur.max), style = text(44.sp, FontWeight.SemiBold, spacing = (-0.02).em))
-                    BasicText(" " + Units.label, style = text(18.sp, FontWeight.Medium, C.Soft), modifier = Modifier.padding(bottom = 7.dp))
-                    val d = Units.delta(cur.max - first.max)
+                    if (cur.max.isFinite()) BasicText(" " + Units.label, style = text(18.sp, FontWeight.Medium, C.Soft), modifier = Modifier.padding(bottom = 7.dp))
                     BasicText(
-                        (if (d >= 0) "+" else "") + fmt1(d) + " " + Units.label + " since start",
+                        if (cur.max.isFinite() && first.max.isFinite()) {
+                            val d = Units.delta(cur.max - first.max)
+                            (if (d >= 0) "+" else "") + fmt1(d) + " " + Units.label + " since start"
+                        } else "— since start",
                         style = text(14.sp, color = C.Secondary), modifier = Modifier.padding(start = 12.dp, bottom = 9.dp),
                     )
                 }
@@ -190,12 +196,15 @@ private fun Chart(samples: List<TimelapseSample>, idx: Int, modifier: Modifier, 
     val n = samples.size
     val scrubCb by rememberUpdatedState(onScrub)
     val count by rememberUpdatedState(n)
-    // display-unit values and a padded range snapped to the grid step
-    val values = samples.map { Units.conv(it.max) }
-    val vMin = values.min(); val vMax = values.max()
-    val step = if (vMax - vMin > 30) 10f else 5f
-    val lo = floor((vMin - 1) / step) * step
-    val hi = maxOf(ceil((vMax + 1) / step) * step, lo + step)
+    // display-unit values; NaN marks a sample without any valid pixel: never plotted, never connected across
+    val values = samples.map { Units.conv(it.max).takeIf { v -> v.isFinite() } ?: Float.NaN }
+    var vMin = Float.POSITIVE_INFINITY; var vMax = Float.NEGATIVE_INFINITY
+    for (v in values) if (v.isFinite()) { if (v < vMin) vMin = v; if (v > vMax) vMax = v }
+    val hasValues = vMin <= vMax
+    // a padded range snapped to the grid step
+    val step = if (hasValues && vMax - vMin > 30) 10f else 5f
+    val lo = if (hasValues) floor((vMin - 1) / step) * step else 0f
+    val hi = if (hasValues) maxOf(ceil((vMax + 1) / step) * step, lo + step) else step
     val t0 = samples.first().time
     val spanMin = (samples.last().time - t0) / 60_000f
     val tickMin = listOf(1f, 2f, 5f, 10f, 15f, 30f, 60f, 120f, 240f).firstOrNull { spanMin / it <= 4 } ?: 480f
@@ -221,12 +230,14 @@ private fun Chart(samples: List<TimelapseSample>, idx: Int, modifier: Modifier, 
             fun y(v: Float) = bottom - (bottom - top) * (v - lo) / (hi - lo)
             val label = text(11.sp, color = C.Muted)
             // grid
-            var g = lo
-            while (g <= hi + 0.01f) {
-                drawLine(Color(0x0FFFFFFF), Offset(left, y(g)), Offset(right, y(g)), 1.dp.toPx())
-                val l = tm.measure("${g.roundToInt()}°", label)
-                drawText(l, topLeft = Offset(left - 8.dp.toPx() - l.size.width, y(g) - l.size.height / 2f))
-                g += step
+            if (hasValues) {
+                var g = lo
+                while (g <= hi + 0.01f) {
+                    drawLine(Color(0x0FFFFFFF), Offset(left, y(g)), Offset(right, y(g)), 1.dp.toPx())
+                    val l = tm.measure("${g.roundToInt()}°", label)
+                    drawText(l, topLeft = Offset(left - 8.dp.toPx() - l.size.width, y(g) - l.size.height / 2f))
+                    g += step
+                }
             }
             var t = 0f
             while (t <= spanMin + 0.001f) {
@@ -234,21 +245,41 @@ private fun Chart(samples: List<TimelapseSample>, idx: Int, modifier: Modifier, 
                 drawText(l, topLeft = Offset((xt((t * 60_000).toLong()) - l.size.width / 2f).coerceIn(left - 10.dp.toPx(), right - l.size.width), bottom + 8.dp.toPx()))
                 t += tickMin
             }
-            // area + line
-            val line = Path().apply { values.forEachIndexed { i, v -> if (i == 0) moveTo(x(i), y(v)) else lineTo(x(i), y(v)) } }
-            val area = Path().apply { addPath(line); lineTo(x(n - 1), bottom); lineTo(x(0), bottom); close() }
-            drawPath(area, Color(0x244FD1E8))
-            drawPath(line, C.Accent, style = Stroke(2.dp.toPx()))
-            // cursor and tooltip
-            val cx = x(idx); val cy = y(values[idx])
+            if (hasValues) {
+                // area + line, one run per stretch of valid samples (no joining across gaps)
+                val line = Path(); val area = Path()
+                var i = 0
+                while (i < n) {
+                    if (!values[i].isFinite()) { i++; continue }
+                    var j = i
+                    while (j + 1 < n && values[j + 1].isFinite()) j++
+                    if (j == i) drawCircle(C.Accent, 2.5.dp.toPx(), Offset(x(i), y(values[i])))
+                    else {
+                        line.moveTo(x(i), y(values[i]))
+                        area.moveTo(x(i), bottom); area.lineTo(x(i), y(values[i]))
+                        for (k in i + 1..j) { line.lineTo(x(k), y(values[k])); area.lineTo(x(k), y(values[k])) }
+                        area.lineTo(x(j), bottom); area.close()
+                    }
+                    i = j + 1
+                }
+                drawPath(area, Color(0x244FD1E8))
+                drawPath(line, C.Accent, style = Stroke(2.dp.toPx()))
+            } else {
+                val msg = tm.measure("No valid temperatures", text(13.sp, FontWeight.SemiBold, C.Secondary))
+                drawText(msg, topLeft = Offset((left + right - msg.size.width) / 2f, (top + bottom - msg.size.height) / 2f))
+            }
+            // cursor and tooltip (the cursor and time stay available at samples without a valid reading)
+            val cx = x(idx)
+            val cv = values[idx]
+            val cy = if (cv.isFinite()) y(cv) else null
             drawLine(Color(0x664FD1E8), Offset(cx, top), Offset(cx, bottom), 1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f)))
-            drawCircle(C.Accent, 5.dp.toPx(), Offset(cx, cy))
+            if (cy != null) drawCircle(C.Accent, 5.dp.toPx(), Offset(cx, cy))
             val l1 = tm.measure("${CLOCK.format(Date(samples[idx].time))} · ${elapsed(samples[idx].time - t0)}", text(12.sp, color = C.Secondary))
-            val l2 = tm.measure("${Units.t(samples[idx].max)} ${Units.label}", text(14.sp, FontWeight.SemiBold))
+            val l2 = tm.measure(if (cv.isFinite()) "${Units.t(samples[idx].max)} ${Units.label}" else "—", text(14.sp, FontWeight.SemiBold))
             val tw = maxOf(l1.size.width, l2.size.width) + 20.dp.toPx()
             val th = l1.size.height + l2.size.height + 14.dp.toPx()
             val tx = (cx - tw / 2).coerceIn(8.dp.toPx(), size.width - tw - 8.dp.toPx())
-            val ty = (cy - th - 14.dp.toPx()).coerceAtLeast(4.dp.toPx())
+            val ty = if (cy != null) (cy - th - 14.dp.toPx()).coerceAtLeast(4.dp.toPx()) else top
             drawRoundRect(C.Surface3, Offset(tx, ty), Size(tw, th), androidx.compose.ui.geometry.CornerRadius(10.dp.toPx()))
             drawText(l1, topLeft = Offset(tx + 10.dp.toPx(), ty + 7.dp.toPx()))
             drawText(l2, topLeft = Offset(tx + 10.dp.toPx(), ty + 7.dp.toPx() + l1.size.height))

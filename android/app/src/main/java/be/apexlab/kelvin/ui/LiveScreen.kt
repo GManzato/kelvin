@@ -302,6 +302,8 @@ fun LiveScreen(app: ThermalApp) {
                     onToggleLock = {
                         ui.update { st ->
                             if (st.locked) st.copy(locked = false)
+                            // nothing to lock onto while no visible pixel has a valid reading: never store NaN limits
+                            else if (!analysis.autoMin.isFinite() || !analysis.autoMax.isFinite()) st
                             else st.copy(
                                 locked = true,
                                 lockLo = (Math.floor(analysis.autoMin * 2.0) / 2).toFloat().coerceIn(Thermal.RANGE_LO, Thermal.RANGE_HI - 1),
@@ -412,8 +414,8 @@ private fun MeasurementOverlay(a: Analysis, s: be.apexlab.kelvin.ViewSettings, m
         },
     ) {
         val alpha = overlayAlpha
-        marker(tm, map.toScreen(a.hot), C.Hot, a.hotReading, alpha)
-        marker(tm, map.toScreen(a.cold), C.Cold, a.coldReading, alpha)
+        a.hot?.let { marker(tm, map.toScreen(it), C.Hot, a.hotReading, alpha) }
+        a.cold?.let { marker(tm, map.toScreen(it), C.Cold, a.coldReading, alpha) }
 
         if (s.tool == Tool.Box) {
             val r = Analysis.boxRect(s.spotA)
@@ -454,7 +456,11 @@ private fun MeasurementOverlay(a: Analysis, s: be.apexlab.kelvin.ViewSettings, m
             val rb = a.at(s.spotB)
             spotLabel(tm, pb, "B", rb, big = false, alpha)
             val ra = a.at(s.spotA)
-            val d = if (ra.sat != Reading.Sat.None || rb.sat != Reading.Sat.None) "— (out of range)" else fmt1(Units.delta(ra.c - rb.c)) + " " + Units.label
+            val d = when {
+                !ra.valid || !rb.valid -> "—"
+                ra.sat != Reading.Sat.None || rb.sat != Reading.Sat.None -> "— (out of range)"
+                else -> fmt1(Units.delta(ra.c - rb.c)) + " " + Units.label
+            }
             val lay = tm.measure("Δ $d", text(14.sp, FontWeight.SemiBold))
             val mid = Offset((pa.x + pb.x) / 2, (pa.y + pb.y) / 2)
             val w = lay.size.width + 20.dp.toPx()
@@ -473,7 +479,7 @@ private fun DrawScope.marker(tm: TextMeasurer, p: Offset, color: Color, r: Readi
     drawCircle(Color.Black.copy(alpha = 0.5f * alpha), 7.dp.toPx(), p)
     drawCircle(Color.White.copy(alpha = 0.9f * alpha), 6.dp.toPx(), p, style = Stroke(1.dp.toPx()))
     drawCircle(color.copy(alpha = alpha), 4.5.dp.toPx(), p, style = Stroke(2.dp.toPx()))
-    val lay = tm.measure(r.text, markerText.copy(color = if (r.sat != Reading.Sat.None) C.Warning else C.Text))
+    val lay = tm.measure(r.text, markerText.copy(color = if (r.valid && r.sat != Reading.Sat.None) C.Warning else C.Text))
     // left of the marker when the label would run into the scale bar at the right edge
     val right = p.x + 10.dp.toPx()
     val x = if (right + lay.size.width > size.width - 66.dp.toPx()) p.x - 10.dp.toPx() - lay.size.width else right
@@ -498,10 +504,10 @@ private fun DrawScope.spotLabel(tm: TextMeasurer, p: Offset, tag: String?, r: Re
     val label = buildAnnotatedString {
         if (tag != null) withStyle(text(11.sp, FontWeight.Bold, C.Soft, 0.1.em, ReadingShadow).toSpanStyle()) { append("$tag ") }
         withStyle(text(if (big) 34.sp else 22.sp, FontWeight.SemiBold, spacing = (-0.02).em, shadow = ReadingShadow).toSpanStyle()) { append(r.text) }
-        if (big) withStyle(text(16.sp, FontWeight.Medium, C.Text2, shadow = ReadingShadow).toSpanStyle()) { append(" " + Units.label) }
+        if (big && r.valid) withStyle(text(16.sp, FontWeight.Medium, C.Text2, shadow = ReadingShadow).toSpanStyle()) { append(" " + Units.label) }
     }
     val lay = tm.measure(label)
-    val sat = if (r.sat != Reading.Sat.None && big) tm.measure("OUTSIDE CAMERA RANGE", text(10.sp, FontWeight.Bold, C.Warning, 0.12.em, ReadingShadow)) else null
+    val sat = if (r.valid && r.sat != Reading.Sat.None && big) tm.measure("OUTSIDE CAMERA RANGE", text(10.sp, FontWeight.Bold, C.Warning, 0.12.em, ReadingShadow)) else null
     val total = lay.size.height + (sat?.size?.height ?: 0)
     // below the spot near the top of the image, above it elsewhere (design: labelTop)
     val top = if (p.y < 190.dp.toPx()) p.y + 22.dp.toPx() else p.y - total - (if (big) 26.dp.toPx() else 18.dp.toPx())
@@ -523,12 +529,15 @@ private fun ScaleBar(
     onRange: (Float, Float) -> Unit,
 ) {
     val colors = s.palette.colors.map { Color(it) }
-    val spot = a.at(s.spotA).c
-    val tick = (1 - (spot - a.rangeMin) / maxOf(a.rangeMax - a.rangeMin, 0.5f)).coerceIn(0f, 1f)
+    val spot = a.at(s.spotA)
+    // no tick for an invalid spot, or while the range itself has no finite ends (nothing valid in view)
+    val tick = if (spot.valid && a.rangeMin.isFinite() && a.rangeMax.isFinite()) {
+        (1 - (spot.c - a.rangeMin) / maxOf(a.rangeMax - a.rangeMin, 0.5f)).coerceIn(0f, 1f)
+    } else null
     Column(modifier.width(58.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (!s.locked) {
-            val maxSat = a.anySatHi
-            val minSat = a.anySatLo
+            val maxSat = a.hasValidReadings && a.anySatHi
+            val minSat = a.hasValidReadings && a.anySatLo
             Column(Modifier.tap(onToggleLock), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 ScaleLabel(if (maxSat) Reading(0f, Reading.Sat.High).text else Units.t(a.rangeMax), if (maxSat) C.Warning else C.Text)
                 Bar(colors, barH, tick, ring = Color(0x4DFFFFFF), capHi = maxSat, capLo = minSat)
@@ -627,7 +636,7 @@ private fun Handle(modifier: Modifier) {
 }
 
 @Composable
-private fun Bar(colors: List<Color>, h: androidx.compose.ui.unit.Dp, tick: Float, ring: Color, capHi: Boolean, capLo: Boolean) {
+private fun Bar(colors: List<Color>, h: androidx.compose.ui.unit.Dp, tick: Float?, ring: Color, capHi: Boolean, capLo: Boolean) {
     Canvas(Modifier.size(20.dp, h)) {
         val bw = 10.dp.toPx()
         val left = (size.width - bw) / 2
@@ -636,14 +645,16 @@ private fun Bar(colors: List<Color>, h: androidx.compose.ui.unit.Dp, tick: Float
         drawRoundRect(Brush.verticalGradient(colors.reversed()), Offset(left, 0f), Size(bw, size.height), corner)
         if (capHi) drawRoundRect(C.Warning, Offset(left - 3.dp.toPx(), -3.dp.toPx()), Size(16.dp.toPx(), 4.dp.toPx()), CornerRadius(2.dp.toPx()))
         if (capLo) drawRoundRect(C.Warning, Offset(left - 3.dp.toPx(), size.height - 1.dp.toPx()), Size(16.dp.toPx(), 4.dp.toPx()), CornerRadius(2.dp.toPx()))
-        val y = tick * size.height
-        val tri = Path().apply {
-            moveTo(left - 9.dp.toPx(), y - 5.dp.toPx())
-            lineTo(left - 3.dp.toPx(), y)
-            lineTo(left - 9.dp.toPx(), y + 5.dp.toPx())
-            close()
+        if (tick != null) {
+            val y = tick * size.height
+            val tri = Path().apply {
+                moveTo(left - 9.dp.toPx(), y - 5.dp.toPx())
+                lineTo(left - 3.dp.toPx(), y)
+                lineTo(left - 9.dp.toPx(), y + 5.dp.toPx())
+                close()
+            }
+            drawPath(tri, Color.White)
         }
-        drawPath(tri, Color.White)
     }
 }
 
@@ -723,7 +734,10 @@ private fun StatusStack(cam: CameraController, ui: UiState, a: Analysis?, frozen
                 BasicText("Dismiss", style = text(13.sp, FontWeight.SemiBold, C.Warning))
             }
         }
-        if (a != null && (a.anySatHi || a.anySatLo)) Chip(bg = Color(0xDB14141A), borderColor = Color(0x8CF5B83D)) {
+        if (a != null && !a.hasValidReadings) Chip(bg = Color(0xDB14141A), borderColor = Color(0x8CF5B83D)) {
+            Icon(Ic.Warning, C.Warning, 14.dp)
+            BasicText("NO VALID TEMPERATURES IN VIEW", style = text(12.sp, FontWeight.SemiBold, C.Warning))
+        } else if (a != null && (a.anySatHi || a.anySatLo)) Chip(bg = Color(0xDB14141A), borderColor = Color(0x8CF5B83D)) {
             Icon(Ic.Warning, C.Warning, 14.dp)
             BasicText(if (a.anySatHi) "PARTS ABOVE ${Units.whole(Thermal.RANGE_HI)} ${Units.label} · CAMERA LIMIT" else "PARTS BELOW ${Units.whole(Thermal.RANGE_LO)} ${Units.label} · CAMERA LIMIT", style = text(12.sp, FontWeight.SemiBold, C.Warning))
         }

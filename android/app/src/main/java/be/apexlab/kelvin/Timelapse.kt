@@ -6,11 +6,20 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
-/** One logged frame: wall-clock [time] and the whole portrait PW×PH temperature image (°C). */
+/**
+ * One logged frame: wall-clock [time] and the whole portrait PW×PH temperature image (°C; NaN marks an
+ * invalid reading). Statistics are finite-only and computed once per frame.
+ */
 class TimelapseSample(val time: Long, val temps: FloatArray) {
-    val max: Float = temps.max()
-    val min: Float = temps.min()
-    val avg: Float = temps.average().toFloat()
+    val stats = TemperatureStats(temps)
+    val validCount: Int get() = stats.validCount
+    val hasValidReadings: Boolean get() = validCount > 0
+    val min: Float get() = stats.min
+    val max: Float get() = stats.max
+    val avg: Float get() = stats.avg
+    /** Index of the hottest/coldest finite pixel, or -1 when the frame has no valid reading. */
+    val hottest: Int get() = stats.hottest
+    val coldest: Int get() = stats.coldest
 }
 
 /**
@@ -29,7 +38,7 @@ class TimelapseLogger {
         running = true
     }
 
-    /** Called for every camera frame; samples the first frame and then every [INTERVAL_MS]. */
+    /** Called for every camera frame; samples the first frame and then every [INTERVAL_MS]. All-invalid frames are kept as timestamped samples (their stats stay NaN) so gaps in the series stay visible. */
     fun offer(raw: IntArray, s: ViewSettings) {
         if (!running) return
         val now = SystemClock.elapsedRealtime()

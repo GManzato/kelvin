@@ -1,6 +1,6 @@
 # Kelvin improvement backlog
 
-Updated 2026-11-02 against Kelvin 0.6 and the retained Android-app 3.6.1 research.
+Updated 2026-11-02: research baseline Kelvin 0.6 / Android-app 3.6.1; SAFE-01 delivered in Kelvin 0.7.
 This is the canonical pending-work checklist. `TODO.md` in the local working copy
 keeps historical delivery notes and the private evidence index; it is not published.
 
@@ -24,7 +24,7 @@ owner-approved validation plan.
 
 Suggested execution order:
 
-1. SAFE-01 through SAFE-03 and TEST-01: temperature validity, bounded parsers and CI.
+1. SAFE-02/03 and TEST-01 next: bounded parsers and CI. SAFE-01 is delivered in 0.7.
 2. SAFE-04/05, DATA-01 through DATA-03 and TEST-02: trustworthy frame admission and replay.
 3. DATA-08, CAL-01 through CAL-04 and IMG-07: safe calibration acquisition and reproducible captures.
 4. Validate controls and calibration, then alignment and compatibility. Run lifecycle/privacy tests alongside them.
@@ -80,10 +80,10 @@ Current implementation references: [Thermal.kt], [FlirCamera.kt], [Iap2Link.kt],
 
 ## 1. Measurement and protocol safety
 
-- [ ] **SAFE-01 — Represent invalid temperatures instead of fabricated heat** — P0, open.
-  - Evidence: **CODE**, `Thermal.celsius` returns 220 °C when its logarithm argument is invalid; analysis currently assumes every pixel is a usable number.
-  - Change: carry validity separately from saturation through live readings, extrema, box/delta, alarms, timelapse, saved data and exports. Handle invalid emissivity, non-finite inputs and an entirely invalid image explicitly.
-  - Done when: cold/low-emissivity and degenerate-signal regressions never produce a fabricated hot spot; invalid pixels cannot trigger alarms or contaminate statistics; an all-invalid frame has an explicit UI/export result. The live safety fix can ship first; IMG-07 subsequently carries validity into the migrated capture format.
+- [x] **SAFE-01 — Represent invalid temperatures instead of fabricated heat** — P0, completed in 0.7.
+  - Evidence: the original `Thermal.celsius` fallback returned 220 °C for an impossible corrected signal. Two failing-before regressions reproduced both that value and its false alarm match.
+  - Change delivered: finite validity is independent of saturation; invalid pixels are neutral gray and have no extrema/average/alarm contribution. Live, viewer, compare, timelapse and video handle absent measurements explicitly. Float grids retain NaN, JSON emits null and CSV leaves invalid cells empty without erasing real zero.
+  - Verified: 38 JVM tests, 10 Python protocol tests and 7 Android persistence/render/CSV tests passed. Native emulator smoke covered invalid/mixed live views, saved viewer, compare, timelapse and actual MP4 encoding/decoding. No physical-camera accuracy/reconnect claim is added. Existing captures are not retroactively repaired without original raw samples.
 
 - [ ] **SAFE-02 — Bound iAP2 packet and parameter parsing in both ports** — P0, open.
   - Evidence: **CODE**, Python `parse_params` does not advance on a zero-length TLV; both link receivers need explicit invalid-length/payload-checksum handling. Android already checks TLV bounds and link-header checksums: preserve those protections.
@@ -223,7 +223,7 @@ Current implementation references: [Thermal.kt], [FlirCamera.kt], [Iap2Link.kt],
 
 - [ ] **IMG-07 — Version captures for raw samples, dimensions, validity and provenance** — P1, open.
   - Evidence: **CODE**, photos already save `temps.f32`, `sat.u8`, settings and width/height, but readers use global dimensions and source raw counts are not retained. Do not replace or recreate these features blindly.
-  - Change: extend the format with explicit version dispatch, native dimensions/orientation, optional original counts, validity/FFC state, calibration hash/profile, timestamps and processing history. Make gallery, viewer, compare, measurements, recolor, share and CSV use each capture's actual grid.
+  - Change: extend the format with explicit version dispatch, native dimensions/orientation, optional original counts, FFC state, calibration hash/profile, timestamps and processing history. SAFE-01 already preserves basic validity in the existing fixed-grid NaN/null encoding; raw samples, generalized geometry and full provenance remain pending. Make gallery, viewer, compare, measurements, recolor, share and CSV use each capture's actual grid.
   - Done when: legacy 60×80 captures remain readable, synthetic larger grids export correctly, raw-backed captures can be recomputed and unknown/truncated formats fail clearly. Private calibration identity/serial must not leak through normal sharing. Depends on SAFE-01 and DATA-02; the dimension-aware format enables subsequent COMP-03 device integration.
 
 - [ ] **IMG-08 — Benchmark processing latency, memory and battery before adding filters** — P2, proposal.

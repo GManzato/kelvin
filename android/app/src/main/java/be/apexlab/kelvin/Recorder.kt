@@ -73,8 +73,8 @@ class VideoRecorder(private val captures: Captures, private val cacheDir: File) 
         private var firstAt = 0L
         private var lastAt = 0L
         private var frames = 0
-        private var min = Float.MAX_VALUE
-        private var max = -Float.MAX_VALUE
+        private var min = Float.NaN
+        private var max = Float.NaN
         private var thumb: Bitmap? = null
         private val canvasBitmap = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888)
 
@@ -99,7 +99,9 @@ class VideoRecorder(private val captures: Captures, private val cacheDir: File) 
 
         private fun draw(frame: CameraController.LiveFrame, s: ViewSettings) {
             val a = Thermal.analyze(frame.raw, s, isoPreview = false)
-            min = minOf(min, a.temps.min()); max = maxOf(max, a.temps.max())
+            // finite full-frame extremes straight from the analysis (no extra per-frame stats pass); an all-invalid frame contributes nothing
+            if (a.autoMin.isFinite()) min = if (min.isNaN()) a.autoMin else minOf(min, a.autoMin)
+            if (a.autoMax.isFinite()) max = if (max.isNaN()) a.autoMax else maxOf(max, a.autoMax)
             val cv = Canvas(canvasBitmap)
             render(cv, a, frame, s)
             if (thumb == null) thumb = Bitmap.createScaledBitmap(canvasBitmap, W / 2, H / 2, true)
@@ -137,16 +139,29 @@ class VideoRecorder(private val captures: Captures, private val cacheDir: File) 
             val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = 0xFFFFFFFF.toInt(); textSize = 34f; typeface = Typeface.DEFAULT_BOLD; setShadowLayer(5f, 0f, 1f, 0xE6000000.toInt())
             }
-            // hottest / coldest markers
-            for ((p, col) in listOf(a.hot to 0xFFFF4D4D.toInt(), a.cold to 0xFF4DA3FF.toInt())) {
-                cv.drawCircle(p.x * sx, p.y * sy, 11f, Paint(line).apply { color = col; strokeWidth = 4f })
+            // hottest / coldest markers only where a valid extreme exists
+            if (a.hasValidReadings) {
+                val marker = Paint(line).apply { strokeWidth = 4f }
+                a.hot?.let { p ->
+                    marker.color = 0xFFFF4D4D.toInt()
+                    cv.drawCircle(p.x * sx, p.y * sy, 11f, marker)
+                }
+                a.cold?.let { p ->
+                    marker.color = 0xFF4DA3FF.toInt()
+                    cv.drawCircle(p.x * sx, p.y * sy, 11f, marker)
+                }
+            }
+            if (!a.hasValidReadings) {
+                val warn = Paint(text).apply { color = 0xFFF5B83D.toInt(); textAlign = Paint.Align.CENTER }
+                cv.drawText("NO VALID TEMPERATURES", W / 2f, H / 2f, warn)
             }
             // spot crosshair and reading
             val x = s.spotA.x * sx
             val y = s.spotA.y * sy
             cv.drawLine(x - 26, y, x - 8, y, line); cv.drawLine(x + 8, y, x + 26, y, line)
             cv.drawLine(x, y - 26, x, y - 8, line); cv.drawLine(x, y + 8, x, y + 26, line)
-            val label = a.at(s.spotA).text + " " + Units.label
+            val spot = a.at(s.spotA)
+            val label = spot.text + if (spot.valid) " " + Units.label else ""
             val tx = if (x + 36 + text.measureText(label) > W - 70) x - 36 - text.measureText(label) else x + 36
             cv.drawText(label, tx, y + 12, text)
             // colour scale

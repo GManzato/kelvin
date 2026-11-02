@@ -136,14 +136,17 @@ private fun ViewerContent(c: Capture, d: CaptureData, ui: UiState, captures: Cap
                     drawImage(image, IntOffset.Zero, IntSize(PW, PH), IntOffset.Zero, IntSize(size.width.toInt(), size.height.toInt()), filterQuality = FilterQuality.Low)
                     val sx = size.width / PW
                     val sy = size.height / PH
+                    // no marker when the capture holds no valid pixel (hottest = -1)
                     val hot = d.hottest
-                    val hp = Offset((hot % PW + 0.5f) * sx, (hot / PW + 0.5f) * sy)
-                    drawCircle(Color.White.copy(alpha = 0.9f), 6.dp.toPx(), hp, style = Stroke(1.dp.toPx()))
-                    drawCircle(C.Hot, 4.5.dp.toPx(), hp, style = Stroke(2.dp.toPx()))
-                    val hl = tm.measure(d.reading(hot).text, text(13.sp, FontWeight.SemiBold, shadow = ReadingShadow))
-                    // label to the left of the marker when it would run off the right edge
-                    val hx = if (hp.x + 10.dp.toPx() + hl.size.width > size.width) hp.x - 10.dp.toPx() - hl.size.width else hp.x + 10.dp.toPx()
-                    drawText(hl, topLeft = Offset(hx, hp.y - hl.size.height / 2f))
+                    if (hot >= 0) {
+                        val hp = Offset((hot % PW + 0.5f) * sx, (hot / PW + 0.5f) * sy)
+                        drawCircle(Color.White.copy(alpha = 0.9f), 6.dp.toPx(), hp, style = Stroke(1.dp.toPx()))
+                        drawCircle(C.Hot, 4.5.dp.toPx(), hp, style = Stroke(2.dp.toPx()))
+                        val hl = tm.measure(d.reading(hot).text, text(13.sp, FontWeight.SemiBold, shadow = ReadingShadow))
+                        // label to the left of the marker when it would run off the right edge
+                        val hx = if (hp.x + 10.dp.toPx() + hl.size.width > size.width) hp.x - 10.dp.toPx() - hl.size.width else hp.x + 10.dp.toPx()
+                        drawText(hl, topLeft = Offset(hx, hp.y - hl.size.height / 2f))
+                    }
                     spots.forEachIndexed { n, p ->
                         val o = Offset(p.x * sx, p.y * sy)
                         val half = 20.dp.toPx(); val gap = 6.dp.toPx()
@@ -156,7 +159,7 @@ private fun ViewerContent(c: Capture, d: CaptureData, ui: UiState, captures: Cap
                         val r = d.reading(p)
                         val label = tm.measure(buildAnnotatedString {
                             withStyle(text(22.sp, FontWeight.SemiBold, shadow = ReadingShadow).toSpanStyle()) { append(r.text) }
-                            withStyle(text(13.sp, shadow = ReadingShadow).toSpanStyle()) { append(" " + Units.label) }
+                            if (r.valid) withStyle(text(13.sp, shadow = ReadingShadow).toSpanStyle()) { append(" " + Units.label) }
                         })
                         val badgeR = 9.dp.toPx()
                         val lx = o.x + 14.dp.toPx()
@@ -170,6 +173,9 @@ private fun ViewerContent(c: Capture, d: CaptureData, ui: UiState, captures: Cap
                 // hint
                 Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp).height(30.dp).clip(RoundedCornerShape(15.dp)).background(Color(0xB30B0B0F)).padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
                     BasicText("Tap the image to add a spot · ${spots.size} of $MAX_SPOTS", style = text(12.sp, color = C.Text2))
+                }
+                if (d.validCount == 0) Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(15.dp)).background(Color(0xB30B0B0F)).padding(horizontal = 14.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+                    BasicText("No valid temperatures in this capture", style = text(13.sp, FontWeight.SemiBold, C.Warning))
                 }
                 // translucent app bar
                 Box(Modifier.fillMaxWidth().height(110.dp).background(Brush.verticalGradient(listOf(Color(0xD10B0B0F), Color.Transparent))))
@@ -190,7 +196,7 @@ private fun ViewerContent(c: Capture, d: CaptureData, ui: UiState, captures: Cap
             // ===== scale =====
             Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 BasicText(Units.t(lo), style = text(13.sp, FontWeight.SemiBold, Color(0xFF8EC5FF)))
-                Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp)).background(Brush.horizontalGradient(palette.colors.map { Color(it) })))
+                Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp)).let { if (lo.isFinite() && hi.isFinite()) it.background(Brush.horizontalGradient(palette.colors.map { c -> Color(c) })) else it.background(C.Surface2) })
                 BasicText(Units.tu(hi), style = text(13.sp, FontWeight.SemiBold, Color(0xFFFF8A80)))
             }
             // ===== palette after the fact =====
@@ -209,9 +215,9 @@ private fun ViewerContent(c: Capture, d: CaptureData, ui: UiState, captures: Cap
             )
             // ===== stats =====
             Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Stat("MIN", d.reading(d.temps.indices.minBy { d.temps[it] }).text, Color(0xFF8EC5FF), Modifier.weight(1f))
-                Stat("AVG", Units.t(d.avg), C.Secondary, Modifier.weight(1f))
-                Stat("MAX", d.reading(d.hottest).text, Color(0xFFFF8A80), Modifier.weight(1f))
+                Stat("MIN", d.reading(d.coldest).text, d.coldest >= 0, Color(0xFF8EC5FF), Modifier.weight(1f))
+                Stat("AVG", Units.t(d.avg), d.avg.isFinite(), C.Secondary, Modifier.weight(1f))
+                Stat("MAX", d.reading(d.hottest).text, d.hottest >= 0, Color(0xFFFF8A80), Modifier.weight(1f))
             }
             // ===== details =====
             Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -278,12 +284,12 @@ fun DeleteDialogs(c: Capture, captures: Captures, ui: UiState, onChanged: () -> 
 }
 
 @Composable
-private fun Stat(label: String, value: String, color: Color, modifier: Modifier) {
+private fun Stat(label: String, value: String, hasUnit: Boolean, color: Color, modifier: Modifier) {
     Column(modifier.clip(RoundedCornerShape(14.dp)).background(C.Surface2).padding(horizontal = 12.dp, vertical = 10.dp)) {
         BasicText(label, style = text(11.sp, FontWeight.SemiBold, color, 0.1.em))
         BasicText(buildAnnotatedString {
             withStyle(text(22.sp, FontWeight.SemiBold).toSpanStyle()) { append(value) }
-            withStyle(text(13.sp, color = C.Soft).toSpanStyle()) { append(" " + Units.label) }
+            if (hasUnit) withStyle(text(13.sp, color = C.Soft).toSpanStyle()) { append(" " + Units.label) }
         }, modifier = Modifier.padding(top = 2.dp))
     }
 }

@@ -56,29 +56,58 @@ class Capture(
     val videoFile: File get() = File(dir, "video.mp4")
 }
 
-/** Radiometric data of a capture, portrait PW×PH. */
+/**
+ * Radiometric data of a capture, portrait PW×PH. A NaN in [temps] marks an invalid reading;
+ * [sat] (0/1/2) is the sensor's own over/under-range flag and stays independent of validity.
+ */
 class CaptureData(val temps: FloatArray, val sat: ByteArray) {
-    fun reading(p: Pt): Reading {
-        val i = Analysis.index(p)
+    /** Finite-only summary, computed once for the grid. */
+    val stats = TemperatureStats(temps)
+
+    val validCount: Int get() = stats.validCount
+    val hasValidReadings: Boolean get() = validCount > 0
+    val min: Float get() = stats.min
+    val max: Float get() = stats.max
+    val avg: Float get() = stats.avg
+    /** Index of the hottest/coldest finite pixel, or -1 when there is none. */
+    val hottest: Int get() = stats.hottest
+    val coldest: Int get() = stats.coldest
+
+    fun reading(p: Pt): Reading = reading(Analysis.index(p))
+
+    /**
+     * The reading at flat index [i]; -1 or out of range yields a bare invalid reading.
+     * The sensor's own over/under-range flag is kept even when the corrected value is invalid —
+     * [Reading] shows validity first ("—"), so no fake value and no mask text on invalid data.
+     */
+    fun reading(i: Int): Reading {
+        if (i < 0 || i >= temps.size) return Reading(Float.NaN)
         return Reading(temps[i], when (sat[i].toInt()) { 1 -> Reading.Sat.High; 2 -> Reading.Sat.Low; else -> Reading.Sat.None })
     }
-
-    val hottest: Int get() = temps.indices.maxBy { temps[it] }
-    val min: Float get() = temps.min()
-    val max: Float get() = temps.max()
-    val avg: Float get() = temps.average().toFloat()
-
-    fun reading(i: Int): Reading = reading(Pt(i % PW + 0.5f, i / PW + 0.5f))
 }
 
 /** Colour range for showing a whole capture: the locked range if one was set, else the full frame. */
 fun Capture.range(d: CaptureData): Pair<Float, Float> = if (locked) rangeMin to rangeMax else d.min to d.max
 
+/** JSON cannot hold NaN/Infinity: a non-finite number is saved as an explicit null. */
+private fun JSONObject.putNum(name: String, v: Float): JSONObject =
+    if (v.isFinite()) put(name, v.toDouble()) else put(name, JSONObject.NULL)
+
+/**
+ * Reads a saved number: a present but invalid value (null or non-numeric) stays invalid (NaN);
+ * [legacyDefault] only applies to fields genuinely absent from older files.
+ */
+private fun num(meta: JSONObject, name: String, legacyDefault: Double): Float =
+    if (!meta.has(name)) legacyDefault.toFloat()
+    else meta.optDouble(name, Double.NaN).toFloat().takeIf { it.isFinite() } ?: Float.NaN
+
 /**
  * Captures live in `files/captures/<stamp>/` with a `meta.json` (`kind`: photo, video or timelapse) and a
  * rendered `thermal.png` thumbnail. Photos add `temps.f32` (PW×PH little-endian float °C, emissivity
- * applied), `sat.u8` (per-pixel saturation) and `visible.jpg`; videos add `video.mp4`; timelapses add
- * `series.f32` (one PW×PH frame per sample) with the sample times in the meta. Photos and videos are
+ * applied; NaN marks an invalid reading and is stored as-is), `sat.u8` (per-pixel saturation, independent
+ * of validity) and `visible.jpg`; videos add `video.mp4`; timelapses add `series.f32` (one PW×PH frame
+ * per sample, NaN preserved) with the sample times in the meta. Non-finite temperatures and settings are
+ * written to `meta.json` as explicit nulls, never as a fabricated number. Photos and videos are
  * also exported to the shared gallery (Pictures/Kelvin, Movies/Kelvin).
  */
 class Captures(private val ctx: Context) {
@@ -102,19 +131,20 @@ class Captures(private val ctx: Context) {
         val meta = runCatching { JSONObject(File(dir, "meta.json").readText()) }.getOrNull() ?: return null
         val time = meta.optLong("time").takeIf { it > 0 }
             ?: runCatching { STAMP.parse(dir.name)!!.time }.getOrDefault(dir.lastModified())
-        val e = meta.optDouble("emissivity", 0.95).toFloat()
+        // a stored setting that is outside its domain is invalid, like the core treats it: never repaired into a plausible value
+        val e = num(meta, "emissivity", 0.95).takeIf { it > 0f && it <= 1f } ?: Float.NaN
         return Capture(
             dir = dir,
             time = time,
             emissivity = e,
             emissivityLabel = meta.optString("emissivityLabel").ifEmpty { Emissivity.entries.firstOrNull { it.value == e }?.label ?: "Custom" },
-            reflectedC = meta.optDouble("reflectedC", Thermal.T_REFLECTED).toFloat(),
+            reflectedC = num(meta, "reflectedC", Thermal.T_REFLECTED).takeIf { it > -273.15f } ?: Float.NaN,
             palette = runCatching { Palette.valueOf(meta.optString("palette")) }.getOrDefault(Palette.Iron),
-            min = meta.optDouble("min").toFloat(),
-            max = meta.optDouble("max").toFloat(),
+            min = num(meta, "min", Double.NaN),
+            max = num(meta, "max", Double.NaN),
             locked = meta.optBoolean("locked"),
-            rangeMin = meta.optDouble("rangeMin").toFloat(),
-            rangeMax = meta.optDouble("rangeMax").toFloat(),
+            rangeMin = num(meta, "rangeMin", Double.NaN),
+            rangeMax = num(meta, "rangeMax", Double.NaN),
             galleryUri = meta.optString("galleryUri").takeIf { it.isNotEmpty() }?.let(Uri::parse),
             spot = meta.optJSONObject("spot")?.let { Pt(it.optDouble("x").toFloat(), it.optDouble("y").toFloat()) },
             kind = when (meta.optString("kind")) { "video" -> CaptureKind.Video; "timelapse" -> CaptureKind.Timelapse; else -> CaptureKind.Photo },
@@ -149,19 +179,20 @@ class Captures(private val ctx: Context) {
         File(dir, "thermal.png").outputStream().use { rendered.compress(Bitmap.CompressFormat.PNG, 100, it) }
 
         val uri = exportImage("kelvin_$stamp.png", rendered)
+        val st = TemperatureStats(a.temps)
         val meta = JSONObject()
             .put("version", 2)
             .put("time", now)
             .put("width", PW).put("height", PH)
-            .put("emissivity", s.emissivity.toDouble())
+            .putNum("emissivity", s.emissivity)
             .put("emissivityLabel", s.emissivityPreset.label)
-            .put("reflectedC", s.reflectedC.toDouble())
+            .putNum("reflectedC", s.reflectedC)
             .put("palette", s.palette.name)
-            .put("rangeMin", a.rangeMin.toDouble()).put("rangeMax", a.rangeMax.toDouble())
+            .putNum("rangeMin", a.rangeMin).putNum("rangeMax", a.rangeMax)
             .put("locked", s.locked)
-            .put("spot", JSONObject().put("x", s.spotA.x.toDouble()).put("y", s.spotA.y.toDouble()))
-            // full-frame extremes: the viewer and gallery show the whole frame, not the live view's crop
-            .put("min", a.temps.min().toDouble()).put("max", a.temps.max().toDouble())
+            .put("spot", JSONObject().putNum("x", s.spotA.x).putNum("y", s.spotA.y))
+            // full-frame extremes over the finite readings only: all-invalid saves null, never fake heat
+            .putNum("min", st.min).putNum("max", st.max)
             .put("model", info.model).put("serial", info.serial).put("firmware", info.firmware)
             .put("galleryUri", uri?.toString() ?: "")
         File(dir, "meta.json").writeText(meta.toString(2))
@@ -174,12 +205,12 @@ class Captures(private val ctx: Context) {
         .put("kind", kind)
         .put("time", time)
         .put("width", PW).put("height", PH)
-        .put("emissivity", s.emissivity.toDouble())
+        .putNum("emissivity", s.emissivity)
         .put("emissivityLabel", s.emissivityPreset.label)
-        .put("reflectedC", s.reflectedC.toDouble())
+        .putNum("reflectedC", s.reflectedC)
         .put("palette", s.palette.name)
         .put("locked", s.locked)
-        .put("rangeMin", s.lockLo.toDouble()).put("rangeMax", s.lockHi.toDouble())
+        .putNum("rangeMin", s.lockLo).putNum("rangeMax", s.lockHi)
         .put("model", info.model).put("serial", info.serial).put("firmware", info.firmware)
 
     /** Moves a finished recording ([mp4], written in the cache) into a new video capture. */
@@ -192,7 +223,7 @@ class Captures(private val ctx: Context) {
         val uri = exportVideo("kelvin_$stamp.mp4", video)
         val meta = baseMeta("video", start, s, info)
             .put("durationMs", durationMs)
-            .put("min", min.toDouble()).put("max", max.toDouble())
+            .putNum("min", min).putNum("max", max)
             .put("galleryUri", uri?.toString() ?: "")
         File(dir, "meta.json").writeText(meta.toString(2))
         return load(dir)!!
@@ -207,12 +238,18 @@ class Captures(private val ctx: Context) {
         for (smp in log) smp.temps.forEach { buf.putFloat(it) }
         File(dir, "series.f32").writeBytes(buf.array())
         File(dir, "thermal.png").outputStream().use { thumb.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        // extremes over the samples' finite readings only; an all-invalid log keeps null extremes
+        var lo = Float.NaN; var hi = Float.NaN
+        for (smp in log) {
+            if (smp.min.isFinite()) lo = if (lo.isNaN()) smp.min else minOf(lo, smp.min)
+            if (smp.max.isFinite()) hi = if (hi.isNaN()) smp.max else maxOf(hi, smp.max)
+        }
         val meta = baseMeta("timelapse", start, s, info)
             .put("durationMs", log.last().time - start)
             .put("frames", log.size)
             .put("intervalMs", TimelapseLogger.INTERVAL_MS)
             .put("times", org.json.JSONArray(log.map { it.time }))
-            .put("min", log.minOf { it.min }.toDouble()).put("max", log.maxOf { it.max }.toDouble())
+            .putNum("min", lo).putNum("max", hi)
         File(dir, "meta.json").writeText(meta.toString(2))
         return load(dir)!!
     }
@@ -234,10 +271,15 @@ class Captures(private val ctx: Context) {
         val name = "timelapse_${STAMP.format(Date(t0))}.csv"
         val sb = StringBuilder()
         sb.append("# Kelvin timelapse from ${DISPLAY.format(Date(t0))}; whole frame; unit $unitLabel\n")
+        sb.append("# empty max/min/avg = no valid reading in that frame; 0.00 is a measured zero\n")
         sb.append("time,elapsed_s,max,min,avg\n")
         for (smp in log) {
             sb.append(DISPLAY.format(Date(smp.time))).append(',').append((smp.time - t0) / 1000)
-            for (v in listOf(smp.max, smp.min, smp.avg)) sb.append(',').append(String.format(Locale.US, "%.2f", convert(v)))
+            for (v in listOf(smp.max, smp.min, smp.avg)) {
+                sb.append(',')
+                val u = convert(v)
+                if (u.isFinite()) sb.append(String.format(Locale.US, "%.2f", u))
+            }
             sb.append('\n')
         }
         return writeDownload(name, sb.toString())
@@ -261,10 +303,15 @@ class Captures(private val ctx: Context) {
 
     // ---- rendering ------------------------------------------------------------------------------
 
-    /** False-colour image of portrait PW×PH [temps] with [palette] over [lo]…[hi]. */
+    /** False-colour image of portrait PW×PH [temps] with [palette] over [lo]…[hi]; invalid samples and a non-finite range draw the neutral no-data colour. */
     fun render(temps: FloatArray, palette: Palette, lo: Float, hi: Float): Bitmap {
         val span = maxOf(hi - lo, 0.5f)
-        val px = IntArray(temps.size) { i -> palette.lut[((temps[i] - lo) / span * 255f).roundToInt().coerceIn(0, 255)] }
+        val rangeOk = lo.isFinite() && hi.isFinite()
+        val px = IntArray(temps.size) { i ->
+            val t = temps[i]
+            if (t.isFinite() && rangeOk) palette.lut[((t - lo) / span * 255f).roundToInt().coerceIn(0, 255)]
+            else Thermal.INVALID_COLOR
+        }
         return Bitmap.createBitmap(px, PW, PH, Bitmap.Config.ARGB_8888)
     }
 
@@ -292,8 +339,13 @@ class Captures(private val ctx: Context) {
             cv.drawText("${n + 1}  ${units(d.reading(p).c)}", x + 14, y - 14, text)
         }
         val hot = d.hottest
-        val hx = (hot % PW + 0.5f) * scale; val hy = (hot / PW + 0.5f) * scale
-        cv.drawCircle(hx, hy, 10f, Paint(line).apply { color = 0xFFFF4D4D.toInt(); strokeWidth = 4f })
+        if (hot >= 0) {
+            val hx = (hot % PW + 0.5f) * scale; val hy = (hot / PW + 0.5f) * scale
+            cv.drawCircle(hx, hy, 10f, Paint(line).apply { color = 0xFFFF4D4D.toInt(); strokeWidth = 4f })
+        } else {
+            val warn = Paint(text).apply { color = 0xFFF5B83D.toInt(); textSize = 30f; textAlign = Paint.Align.CENTER }
+            cv.drawText("No valid temperature data", w / 2f, h / 2f, warn)
+        }
         // colour scale
         val grad = Paint().apply {
             shader = LinearGradient(0f, 40f, 0f, h - 40f, palette.colors.reversedArray(), null, Shader.TileMode.CLAMP)
@@ -312,11 +364,13 @@ class Captures(private val ctx: Context) {
         val name = "kelvin_${c.id}.csv"
         val sb = StringBuilder()
         sb.append("# Kelvin capture ${DISPLAY.format(Date(c.time))}\n")
-        sb.append("# emissivity ${c.emissivity}; reflected ${c.reflectedC} °C; unit $unitLabel; ${PW}x$PH, row-major from top-left\n")
+        sb.append("# emissivity ${if (c.emissivity.isFinite()) String.format(Locale.US, "%.2f", c.emissivity) else "—"}; reflected ${fmt1(c.reflectedC)} °C; unit $unitLabel; ${PW}x$PH, row-major from top-left\n")
+        sb.append("# empty cell = no valid reading; 0.00 is a measured zero\n")
         for (y in 0 until PH) {
             for (x in 0 until PW) {
                 if (x > 0) sb.append(',')
-                sb.append(String.format(Locale.US, "%.2f", convert(d.temps[y * PW + x])))
+                val v = convert(d.temps[y * PW + x])
+                if (v.isFinite()) sb.append(String.format(Locale.US, "%.2f", v))
             }
             sb.append('\n')
         }

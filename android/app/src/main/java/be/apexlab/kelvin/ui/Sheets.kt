@@ -215,7 +215,7 @@ fun AlarmSheet(ui: UiState, a: Analysis?) {
             Column(Modifier.padding(bottom = 6.dp), horizontalAlignment = Alignment.End) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Box(Modifier.size(10.dp).clip(RoundedCornerShape(3.dp)).background(C.Isotherm))
-                    BasicText("${a?.let { "%.1f".format(java.util.Locale.US, it.isoMatchPct) } ?: "—"} %", style = text(15.sp, FontWeight.SemiBold))
+                    BasicText("${a?.isoMatchPct?.takeIf { it.isFinite() }?.let { "%.1f".format(java.util.Locale.US, it) } ?: "—"} %", style = text(15.sp, FontWeight.SemiBold))
                 }
                 BasicText("of frame matches", style = text(12.sp, color = C.Secondary))
             }
@@ -358,7 +358,7 @@ fun EmissivitySheet(ui: UiState, a: Analysis?) {
             BasicText(
                 buildAnnotatedString {
                     withStyle(text(13.sp, color = C.Body).toSpanStyle()) { append("Spot now reads ") }
-                    withStyle(text(13.sp, FontWeight.SemiBold).toSpanStyle()) { append("${a?.at(s.spotA)?.text ?: "—"} ${Units.label}") }
+                    withStyle(text(13.sp, FontWeight.SemiBold).toSpanStyle()) { append(a?.at(s.spotA)?.takeIf { it.valid }?.let { "${it.text} ${Units.label}" } ?: "—") }
                     withStyle(text(13.sp, color = C.Body).toSpanStyle()) { append(" · reflected ${Units.tu(s.reflectedC)}") }
                 },
                 modifier = Modifier.weight(1f),

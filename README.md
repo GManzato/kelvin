@@ -12,10 +12,28 @@
 
 ## Status
 
-- Current version: **0.6** (`versionCode` 6), Android 10 (API 29) or newer, phone with USB host / OTG support.
-- Physically tested with a FLIR ONE Lightning (435-0004-01) through an adapter on a Samsung Galaxy S25 Ultra. That is the verified camera/phone combination; it is not a general compatibility guarantee. Other phones may work or may not; see [Compatibility](#compatibility).
+- Current version: **0.7** (`versionCode` 7), Android 10 (API 29) or newer, phone with USB host / OTG support.
+- Hardware baseline from earlier device checks: a FLIR ONE Lightning (435-0004-01) through an adapter on a Samsung Galaxy S25 Ultra. That is the verified camera/phone combination, not a general compatibility guarantee. Other phones may work or may not; see [Compatibility](#compatibility).
 - This is **not** the iPhone app and does not run on iOS.
 - Hardware-free regression tests supplement manual device checks. Neither establishes compatibility with other cameras, phones, adapters or operating-system versions.
+
+### 0.7 — invalid-reading safety
+
+An impossible corrected signal is now **no valid reading**, not a fabricated
+220 °C value. Invalid pixels are neutral gray, missing readouts show `—`, and
+invalid values cannot become extrema, enter averages or trigger alarms. A frame
+with no valid temperatures is labeled explicitly in live/capture/video views;
+timelapse keeps its timestamp as a gap rather than inventing a reading.
+
+Saved float grids preserve invalid values as NaN, JSON metadata uses `null`,
+and CSV numeric cells are empty for invalid readings. **`0.00` remains a measured
+zero.** Saturation warnings remain separate from invalidity. Existing captures
+are not retroactively repaired: older files do not retain the raw samples needed
+to distinguish the old fallback from a genuine recorded value.
+
+The safety change was verified with synthetic data on an isolated Android 13
+emulator, including native screens, storage/CSV and actual video encoding/decoding.
+It is not a new physical-camera validation or an accuracy certification.
 
 ## License status
 
@@ -28,11 +46,11 @@ Third-party libraries and fonts used by the app keep their own licenses. See [TH
 No build is needed to try it:
 
 - Latest release page: <https://github.com/GManzato/kelvin/releases/latest>
-- Direct APK for version 0.6: <https://github.com/GManzato/kelvin/releases/download/v0.6/Kelvin-0.6.apk>
+- Direct APK for version 0.7: <https://github.com/GManzato/kelvin/releases/download/v0.7/Kelvin-0.7.apk>
 
 ### Install (sideload)
 
-1. Download `Kelvin-0.6.apk` on the phone (or copy it there).
+1. Download `Kelvin-0.7.apk` on the phone (or copy it there).
 2. Open it. Android will ask you to allow installs from the app you opened it with (browser or file manager); allow that for the install, then you can turn it off again. Wording differs between Android versions and phone makers.
 3. Android or Play Protect may warn about an app from outside the Play Store. Kelvin is not distributed through Google Play. Install only if you trust where you got the file.
 4. Connect the camera to the phone through a Lightning-to-USB-C adapter and press the camera's power button. Kelvin finds it on its own once it is powered on.
@@ -40,7 +58,7 @@ No build is needed to try it:
 
 The release APK uses the package `be.apexlab.kelvin` (app name "Kelvin"). Debug builds you make yourself use `be.apexlab.kelvin.debug` ("Kelvin dev") and install next to it.
 
-Versions up to 0.5 used the package `com.gilles.flirone`. Android treats 0.6 as a different app: it installs next to the old one instead of updating it, and settings and captures stored inside the old app are not carried over. Export anything you want to keep, then uninstall the old Kelvin.
+Version 0.7 updates 0.6 in place. Versions up to 0.5 used `com.gilles.flirone`, so Android treats 0.6 and later as a different app: they install next to the old one instead of updating it, and settings and captures stored inside the old app are not carried over. Export anything you want to keep before uninstalling the old Kelvin.
 
 ## Features
 
@@ -64,7 +82,7 @@ The thermal sensor is 80×60 pixels (Kelvin rotates it to 60×80 for portrait us
 
 Only one camera is streamed.
 
-| Hardware | USB | Kelvin 0.5 |
+| Hardware | USB | Support status (hardware baseline) |
 | --- | --- | --- |
 | FLIR ONE for iPhone, Lightning, 435-0004-01, through a Lightning-to-USB-C adapter | `09cb:1996` | **Tested** and streamed |
 | FLIR ONE Pro and other Lightning models that identify differently | `09cb:1996` | Identified and **reported only**; stopped before any config or frame session |
@@ -148,9 +166,23 @@ Android SDK setup used for builds:
 
 It covers thermal count conversion, portrait rotation and flips, visible-region
 scaling, saturation warnings, emissivity/reflected-temperature correction,
-alarm thresholds, box measurements, temperature units and byte-stream buffering.
+alarm thresholds, box measurements, temperature units and byte-stream buffering,
+including invalid signals/settings, mixed-validity frames and all-invalid cases.
 The reference temperatures protect the current conversion from regressions;
 they are not independent calibration or proof of measurement accuracy.
+
+For the Android framework persistence/rendering regressions, start an isolated
+Android 10-or-newer emulator and run from `android/`:
+
+```sh
+./gradlew connectedDebugAndroidTest
+```
+
+These tests exercise NaN float persistence, JSON nulls, finite-only aggregates,
+neutral no-data bitmap rendering, legacy metadata and real MediaStore CSV
+read-back. Their capture operations use a temporary folder and clean up their
+own exports; normal application startup still runs, so use an isolated debug
+emulator rather than a device with personal test-app data. No camera is required.
 
 Run the Python reference-driver protocol suite from the repository root:
 
@@ -167,9 +199,9 @@ Only PyUSB is needed for this suite, not NumPy, Pillow, libusb or a camera.
 The Android and Python drivers are separate implementations: passing Python
 tests does not verify Android USB sessions.
 
-Neither suite accesses a physical camera. USB permissions, real connections,
-Compose interaction, diagnostics sharing and media capture still need
-device/emulator testing.
+These suites do not access a physical camera. USB permissions, real connections,
+full Compose interaction, diagnostics sharing and media lifecycle behavior still
+need broader device testing; the capture tests cover only their stated boundaries.
 
 ## Python USB research tools
 
@@ -206,6 +238,7 @@ android/                           Gradle project (open this in Android Studio)
   app/src/main/res/                icons, colors, USB device filter, bundled fonts
   app/src/main/assets/font-licenses/  font copyright notices and license texts
   app/src/test/java/              JVM thermal, units and byte-stream regression tests
+  app/src/androidTest/java/       Android capture, bitmap, JSON and CSV validity regressions
   app/src/main/java/be/apexlab/kelvin/
     FlirCamera.kt                  USB driver for the tested Lightning transport
     Iap2Link.kt                    iAP2 link and session handling

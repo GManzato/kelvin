@@ -113,39 +113,79 @@ object Units {
     /** Number only, one decimal. */
     fun t(c: Float): String = fmt1(conv(c))
     /** Number and unit. */
-    fun tu(c: Float): String = t(c) + " " + label
+    fun tu(c: Float): String = if (c.isFinite()) t(c) + " " + label else "—"
     /** Whole degrees (thresholds, limits). */
-    fun whole(c: Float): String = conv(c).roundToInt().toString().replace("-", "−")
+    fun whole(c: Float): String = if (c.isFinite()) conv(c).roundToInt().toString().replace("-", "−") else "—"
 }
 
 /** A measured value; [sat] marks a reading beyond the camera's −20…120 °C range. */
 data class Reading(val c: Float, val sat: Sat = Sat.None) {
     enum class Sat { None, High, Low }
 
+    /** Validity is independent of the sensor's over/under-range indication. */
+    val valid: Boolean get() = c.isFinite()
+
     val text: String
-        get() = when (sat) {
+        get() = if (!valid) "—" else when (sat) {
             Sat.High -> "> " + Units.whole(Thermal.RANGE_HI)
             Sat.Low -> "< " + Units.whole(Thermal.RANGE_LO)
             Sat.None -> Units.t(c)
         }
 }
 
-fun fmt1(v: Float): String = String.format(java.util.Locale.US, "%.1f", v).replace("-", "−")
+fun fmt1(v: Float): String = if (v.isFinite()) String.format(java.util.Locale.US, "%.1f", v).replace("-", "−") else "—"
+
+/** Finite-only summary of an immutable temperature grid; empty summaries have no numeric value. */
+class TemperatureStats(temps: FloatArray) {
+    val validCount: Int
+    val min: Float
+    val max: Float
+    val avg: Float
+    val hottest: Int
+    val coldest: Int
+
+    init {
+        var count = 0
+        var sum = 0.0
+        var lo = Float.POSITIVE_INFINITY
+        var hi = Float.NEGATIVE_INFINITY
+        var hot = -1
+        var cold = -1
+        for (i in temps.indices) {
+            val t = temps[i]
+            if (!t.isFinite()) continue
+            if (t < lo) { lo = t; cold = i }
+            if (t > hi) { hi = t; hot = i }
+            sum += t
+            count++
+        }
+        validCount = count
+        min = if (count > 0) lo else Float.NaN
+        max = if (count > 0) hi else Float.NaN
+        avg = if (count > 0) (sum / count).toFloat() else Float.NaN
+        hottest = hot
+        coldest = cold
+    }
+}
 
 class Analysis(
-    /** Emissivity-corrected temperatures, portrait, row-major PW×PH. */
+    /** Emissivity-corrected °C, portrait PW×PH; NaN denotes an invalid reading. */
     val temps: FloatArray,
     private val satHiMask: BooleanArray,
     private val satLoMask: BooleanArray,
     /** ARGB pixels to draw, portrait PW×PH (palette, or greyscale + isotherm while alarms are shown). */
     val pixels: IntArray,
-    val hot: Pt, val hotReading: Reading,
-    val cold: Pt, val coldReading: Reading,
+    val hot: Pt?, val hotReading: Reading,
+    val cold: Pt?, val coldReading: Reading,
     val autoMin: Float, val autoMax: Float,
     val rangeMin: Float, val rangeMax: Float,
     val anySatHi: Boolean, val anySatLo: Boolean,
     val isoMatchPct: Float,
+    /** Finite corrected readings inside the visible measurement region. */
+    val validCount: Int,
 ) {
+    val hasValidReadings: Boolean get() = validCount > 0
+
     /** Per-pixel saturation: 0 = in range, 1 = above 120 °C, 2 = below −20 °C (stored with captures). */
     fun satMask(): ByteArray = ByteArray(temps.size) { i -> if (satHiMask[i]) 1 else if (satLoMask[i]) 2 else 0 }
 
@@ -162,11 +202,13 @@ class Analysis(
         for (y in y0 until y1) for (x in x0 until x1) {
             val i = y * PW + x
             val t = temps[i]
+            if (!t.isFinite()) continue
             if (t < mn) { mn = t; mnSat = if (satLoMask[i]) Reading.Sat.Low else Reading.Sat.None }
             if (t > mx) { mx = t; mxSat = if (satHiMask[i]) Reading.Sat.High else Reading.Sat.None }
             sum += t; n++
         }
-        return Triple(Reading(mn, mnSat), Reading(mx, mxSat), Reading((sum / n).toFloat()))
+        return if (n > 0) Triple(Reading(mn, mnSat), Reading(mx, mxSat), Reading((sum / n).toFloat()))
+        else Triple(Reading(Float.NaN), Reading(Float.NaN), Reading(Float.NaN))
     }
 
     companion object {
@@ -207,9 +249,12 @@ object Thermal {
     private fun sigRefl(reflectedC: Double) = J1 * R / (exp(B / (reflectedC + 273.15)) - F) + J0
 
     private fun celsius(sig: Double, emissivity: Double, sigRefl: Double): Double {
-        val sigObj = (sig - (1 - emissivity) * sigRefl) / emissivity
-        val arg = J1 * R / (sigObj - J0) + F
-        return if (arg <= 1.0) RANGE_HI.toDouble() + 100 else B / ln(arg) - 273.15
+        val sigObj = if (emissivity == 1.0) sig else (sig - (1 - emissivity) * sigRefl) / emissivity
+        val offsetSignal = sigObj - J0
+        if (!offsetSignal.isFinite() || offsetSignal <= 0.0) return Double.NaN
+        val arg = J1 * R / offsetSignal + F
+        if (!arg.isFinite() || arg <= 1.0) return Double.NaN
+        return B / ln(arg) - 273.15
     }
 
     /** Rotates the 80×60 sensor image to portrait 60×80 ([Orientation.THERMAL_DEGREES]). */
@@ -229,8 +274,11 @@ object Thermal {
         val satHi = BooleanArray(n)
         val satLo = BooleanArray(n)
         val e = s.emissivity.toDouble()
-        val refl = sigRefl(s.reflectedC.toDouble())
+        val settingsValid = e.isFinite() && e > 0.0 && e <= 1.0 &&
+            s.reflectedC.isFinite() && s.reflectedC > -273.15f
+        val refl = if (settingsValid) sigRefl(s.reflectedC.toDouble()) else Double.NaN
         var hotI = -1; var coldI = -1
+        var validCount = 0
         var anyHi = false; var anyLo = false
         for (py in 0 until PH) for (px in 0 until PW) {
             val i = py * PW + px
@@ -240,46 +288,65 @@ object Thermal {
             val t1 = celsius(sig, 1.0, refl)
             satHi[i] = t1 >= SAT_HI
             satLo[i] = t1 <= SAT_LO
-            temps[i] = celsius(sig, e, refl).toFloat()
-            if (px < visible[0] || px >= visible[2] || py < visible[1] || py >= visible[3]) continue
+            val corrected = when {
+                !settingsValid || !t1.isFinite() -> Float.NaN
+                e == 1.0 -> t1.toFloat()
+                else -> celsius(sig, e, refl).toFloat()
+            }
+            temps[i] = if (corrected.isFinite()) corrected else Float.NaN
+            if (!temps[i].isFinite() || px < visible[0] || px >= visible[2] || py < visible[1] || py >= visible[3]) continue
+            validCount++
             anyHi = anyHi || satHi[i]
             anyLo = anyLo || satLo[i]
             if (hotI < 0 || temps[i] > temps[hotI]) hotI = i
             if (coldI < 0 || temps[i] < temps[coldI]) coldI = i
         }
-        if (hotI < 0) { hotI = 0; coldI = 0 }
-        val autoMin = temps[coldI]
-        val autoMax = temps[hotI]
-        val lo = if (s.locked) s.lockLo else autoMin
-        val hi = if (s.locked) s.lockHi else autoMax
+        val autoMin = if (coldI >= 0) temps[coldI] else Float.NaN
+        val autoMax = if (hotI >= 0) temps[hotI] else Float.NaN
+        val lockedRangeValid = s.locked && s.lockLo.isFinite() && s.lockHi.isFinite() && s.lockHi >= s.lockLo
+        val lo = if (validCount > 0 && lockedRangeValid) s.lockLo else autoMin
+        val hi = if (validCount > 0 && lockedRangeValid) s.lockHi else autoMax
         val span = maxOf(hi - lo, 0.5f)
 
         val pixels = IntArray(n)
         var matches = 0
         val iso = s.alarmOn || isoPreview
+        val thresholdsValid = s.isoLo.isFinite() &&
+            (s.isoMode != IsoMode.Between || (s.isoHi.isFinite() && s.isoHi >= s.isoLo))
         for (i in 0 until n) {
-            val v = ((temps[i] - lo) / span * 255f).roundToInt().coerceIn(0, 255)
-            val match = when (s.isoMode) {
+            if (!temps[i].isFinite()) {
+                pixels[i] = INVALID_COLOR
+                continue
+            }
+            val match = thresholdsValid && when (s.isoMode) {
                 IsoMode.Above -> temps[i] >= s.isoLo
                 IsoMode.Below -> temps[i] <= s.isoLo
                 IsoMode.Between -> temps[i] in s.isoLo..s.isoHi
             }
             if (match) matches++
+            if (!lo.isFinite() || !hi.isFinite()) {
+                pixels[i] = INVALID_COLOR
+                continue
+            }
+            val v = ((temps[i] - lo) / span * 255f).roundToInt().coerceIn(0, 255)
             pixels[i] = when {
                 iso && match -> ISOTHERM
                 iso -> (0xFF shl 24) or (v shl 16) or (v shl 8) or v
                 else -> s.palette.lut[v]
             }
         }
-        fun pt(i: Int) = Pt(i % PW + 0.5f, i / PW + 0.5f)
-        fun reading(i: Int) = Reading(temps[i], if (satHi[i]) Reading.Sat.High else if (satLo[i]) Reading.Sat.Low else Reading.Sat.None)
+        fun pt(i: Int): Pt? = if (i >= 0) Pt(i % PW + 0.5f, i / PW + 0.5f) else null
+        fun reading(i: Int) = if (i >= 0) Reading(temps[i], if (satHi[i]) Reading.Sat.High else if (satLo[i]) Reading.Sat.Low else Reading.Sat.None) else Reading(Float.NaN)
         return Analysis(
             temps, satHi, satLo, pixels,
             pt(hotI), reading(hotI), pt(coldI), reading(coldI),
             autoMin, autoMax, lo, hi, anyHi, anyLo,
-            matches * 100f / n,
+            matches * 100f / n, validCount,
         )
     }
+
+    /** Neutral no-data colour: it is not an entry on the temperature palette. */
+    const val INVALID_COLOR: Int = 0xFF60606C.toInt()
 
     private const val ISOTHERM = 0xFFD4FF3A.toInt()
 }

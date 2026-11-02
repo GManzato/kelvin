@@ -76,16 +76,18 @@ fun CompareScreen(beforeId: String, afterId: String, ui: UiState, captures: Capt
         }
         val pair = sides ?: return@Column
         val (before, after) = pair
-        val lo = minOf(before.d.min, after.d.min)
-        val hi = maxOf(before.d.max, after.d.max)
+        // one side without valid pixels must not poison the other side's range: take the finite ends only
+        val lo = finiteMin(before.d.min, after.d.min)
+        val hi = finiteMax(before.d.max, after.d.max)
+        val rangeKnown = lo.isFinite() && hi.isFinite()
         val palette = after.c.palette
         val imgB = remember(pair) { captures.render(before.d.temps, palette, lo, hi).asImageBitmap() }
         val imgA = remember(pair) { captures.render(after.d.temps, palette, lo, hi).asImageBitmap() }
-        SplitView(imgB, imgA, "BEFORE · ${TIME.format(Date(before.c.time))}", "AFTER · ${TIME.format(Date(after.c.time))}")
+        SplitView(imgB, imgA, "BEFORE · ${TIME.format(Date(before.c.time))}" + noData(before.d), "AFTER · ${TIME.format(Date(after.c.time))}" + noData(after.d))
 
         Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             BasicText(Units.t(lo), style = text(12.sp, FontWeight.SemiBold))
-            Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp)).background(Brush.horizontalGradient(palette.colors.map { Color(it) })))
+            Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp)).let { if (rangeKnown) it.background(Brush.horizontalGradient(palette.colors.map { c -> Color(c) })) else it.background(C.Surface2) })
             BasicText(Units.tu(hi), style = text(12.sp, FontWeight.SemiBold))
         }
         CenteredText("SAME LOCKED RANGE ON BOTH SIDES", text(11.sp, color = C.Muted, spacing = 0.06.em), Modifier.fillMaxWidth().padding(top = 6.dp))
@@ -99,11 +101,28 @@ fun CompareScreen(beforeId: String, afterId: String, ui: UiState, captures: Capt
             )
             rows.forEachIndexed { i, (k, b, a) ->
                 val change = a - b
-                TableRow(k, Units.t(b), Units.t(a), (if (change > 0) "+" else "") + fmt1(Units.delta(change)), changeColor = if (change > 0.05f) Color(0xFFFF8A80) else C.Secondary, divider = i < rows.size - 1)
+                val known = a.isFinite() && b.isFinite()
+                TableRow(k, Units.t(b), Units.t(a), if (!known) "—" else (if (change > 0) "+" else "") + fmt1(Units.delta(change)), changeColor = if (known && change > 0.05f) Color(0xFFFF8A80) else C.Secondary, divider = i < rows.size - 1)
             }
         }
     }
 }
+
+private fun finiteMin(a: Float, b: Float): Float = when {
+    a.isFinite() && b.isFinite() -> minOf(a, b)
+    a.isFinite() -> a
+    b.isFinite() -> b
+    else -> Float.NaN
+}
+
+private fun finiteMax(a: Float, b: Float): Float = when {
+    a.isFinite() && b.isFinite() -> maxOf(a, b)
+    a.isFinite() -> a
+    b.isFinite() -> b
+    else -> Float.NaN
+}
+
+private fun noData(d: CaptureData) = if (d.validCount == 0) " · NO VALID DATA" else ""
 
 @Composable
 private fun SplitView(before: ImageBitmap, after: ImageBitmap, labelB: String, labelA: String) {
