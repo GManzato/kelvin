@@ -220,15 +220,20 @@ android/                           Gradle project (open this in Android Studio)
 flirone_ios.py, iap2host.py, snap.py   Python research tools
 tests/test_iap2host.py             hardware-free Python iAP2 protocol regressions
 THIRD_PARTY_NOTICES.md             third-party licenses
+BACKLOG.md                        prioritized, evidence-backed improvement checklist
 ```
 
 Architecture: the Python code and the Kotlin app are **two independent ports** of the same USB bring-up. The Android app does not run or bundle the Python code, and no FLIR SDK or binary is bundled in either.
 
 ## Roadmap
 
-- Support for additional cameras, only when proper factory calibration and thermal layout can be established.
-- Super-resolution or other upscaling is deferred; Kelvin makes no HD claim.
-- Device/emulator integration tests for connection lifecycle, diagnostics and media handling.
+See **[BACKLOG.md](BACKLOG.md)** for the detailed improvement checklist, including
+measurement safety, protocol robustness, per-device calibration, FFC controls,
+image quality, compatibility, regression coverage and experimental super-resolution.
+Each item records its evidence, acceptance criteria and relevant dependencies or
+hardware/artifact gates. It separates decoded host-app behavior from live-camera
+observations and proposals; unchecked items are not implemented capabilities.
+Private research artifacts remain excluded from this repository.
 
 ## Contributing and reports
 
