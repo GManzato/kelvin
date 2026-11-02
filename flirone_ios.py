@@ -8,13 +8,16 @@ Bring-up (reverse-engineered from FLIR ThermalSDK.framework + iAP2):
   4. fileio / frame are *native transport*: select alt setting 1 on IF1 / IF2. No EA start message
      (sending one reboots the camera).
   5. Frames arrive on EP 0x85: 28-byte header (magic 0xBEEF) + thermal + JPEG + status JSON.
+
+Config and frame bytes go through the strict, fail-closed parsers in rbprotocol.py (header CRC,
+version, length caps, strict JSON). A malformed stream raises; it is never reinterpreted.
 """
-import json, struct, threading, time
+import threading, time
 import usb.core, usb.util
 from iap2host import IAP2Device
+from rbprotocol import CONFIG, FRAME, MAX_CHUNK_BYTES, RbReader
 
 VID, PID = 0x09CB, 0x1996
-FRAME_MAGIC = b"\xef\xbe\x00\x00"
 CONFIG_SESSION = 1
 
 
@@ -34,19 +37,28 @@ class FlirOne:
         d.reset()  # drop any stale iAP2 link
         time.sleep(1.5)
         self.d = d = _find()
-        for i in (0, 1, 2):
-            usb.util.claim_interface(d, i)
-        self.iap = IAP2Device(d)
-        self.info = self.iap.handshake()
         self.events = []  # config-channel JSON messages from the camera
-        self._cfg_buf = bytearray()
         self._stop = False
-        self.iap.start_ea(0, CONFIG_SESSION)  # protocol id 0 = com.flir.rosebud.config
-        self._pump(0.3)
-        d.set_interface_altsetting(interface=1, alternate_setting=1)  # fileio (native)
-        self._pump(0.5)
-        self._iap_thread = threading.Thread(target=self._iap_loop, daemon=True)
-        self._iap_thread.start()
+        self._iap_error = None  # first background iAP2/config failure, surfaced by frames()
+        self._iap_thread = None
+        self._cfg = RbReader(CONFIG, self._on_config)
+        try:
+            for i in (0, 1, 2):
+                usb.util.claim_interface(d, i)
+            self.iap = IAP2Device(d)
+            self.info = self.iap.handshake()
+            self.iap.start_ea(0, CONFIG_SESSION)  # protocol id 0 = com.flir.rosebud.config
+            self._pump(0.3)
+            d.set_interface_altsetting(interface=1, alternate_setting=1)  # fileio (native)
+            self._pump(0.5)
+            self._iap_thread = threading.Thread(target=self._iap_loop, daemon=True)
+            self._iap_thread.start()
+        except BaseException:
+            try:
+                self.close()  # release whatever was claimed; never leave a failed object holding USB
+            except Exception:
+                pass
+            raise
 
     def _pump(self, sec):
         t = time.time() + sec
@@ -57,56 +69,60 @@ class FlirOne:
         while not self._stop:
             try:
                 self._handle(self.iap.poll(50))
-            except usb.core.USBError:
+            except Exception as e:  # USB or protocol failure: stop and let frames() report it
+                if not self._stop:
+                    self._iap_error = e
+                    self._stop = True
                 return
 
+    def _raise_if_failed(self):
+        err = self._iap_error
+        if err is not None:
+            raise RuntimeError("FLIR ONE iAP2/config channel failed") from err
+
+    def _on_config(self, packet):
+        if packet.json is not None:  # header-only notices are not events
+            self.events.append(packet.json)
+
     def _handle(self, packets):
-        for _link_session, p in packets:
+        ea_sid = self.iap.ea_sid
+        for link_session, p in packets:
+            if ea_sid is None or link_session != ea_sid:
+                continue  # not the negotiated external-accessory link session
             if len(p) < 2:
-                continue
-            self._cfg_buf += p[2:]
-            while len(self._cfg_buf) >= 16:
-                magic, _proto, length, _crc = struct.unpack_from("<IIII", self._cfg_buf)
-                if magic != 0x1CC:
-                    self._cfg_buf.clear()
-                    break
-                if len(self._cfg_buf) < 16 + length:
-                    break
-                js = bytes(self._cfg_buf[16 : 16 + length]).rstrip(b"\0")
-                del self._cfg_buf[: 16 + length]
-                try:
-                    self.events.append(json.loads(js))
-                except ValueError:
-                    pass
+                self._cfg.clear()
+                raise ValueError("truncated external accessory session prefix")
+            if (p[0] << 8 | p[1]) != CONFIG_SESSION:
+                continue  # other EA session (big-endian logical id): must not touch config state
+            self._cfg.feed(p, 2)  # empty body is a no-op; malformed config raises
 
     def frames(self):
-        """Yield dicts: thermal (bytes), jpeg (bytes), status (dict)."""
+        """Yield dicts: thermal (bytes), jpeg (bytes), status (dict).
+
+        Raises on a malformed frame stream or when the background iAP2/config channel failed.
+        """
+        self._raise_if_failed()
+        ready = []
+        reader = RbReader(FRAME, ready.append)
         self.d.set_interface_altsetting(interface=2, alternate_setting=1)  # frame (native)
-        buf = bytearray()
         while True:
+            self._raise_if_failed()
             try:
-                buf += bytes(self.d.read(0x85, 512 * 1024, 1000))
+                chunk = self.d.read(0x85, MAX_CHUNK_BYTES, 1000)
             except usb.core.USBTimeoutError:
                 continue
-            while True:
-                i = buf.find(FRAME_MAGIC)
-                if i < 0:
-                    del buf[:-3]
-                    break
-                del buf[:i]
-                if len(buf) < 28:
-                    break
-                _m, _proto, total, t_len, j_len, s_len, _crc = struct.unpack_from("<7I", buf)
-                if len(buf) < 28 + total:
-                    break
-                body = bytes(buf[28 : 28 + total])
-                del buf[: 28 + total]
-                status = body[t_len + j_len : t_len + j_len + s_len].rstrip(b"\0")
-                try:
-                    status = json.loads(status)
-                except ValueError:
-                    status = {"raw": status.decode(errors="replace")}
-                yield dict(thermal=body[:t_len], jpeg=body[t_len : t_len + j_len], status=status)
+            error = None
+            try:
+                reader.feed(chunk)
+            except ValueError as e:
+                error = e
+            batch = ready[:]
+            ready.clear()
+            for packet in batch:  # frames validated before any failure are still delivered
+                self._raise_if_failed()
+                yield dict(thermal=packet.thermal, jpeg=packet.visual, status=packet.json)
+            if error is not None:
+                raise error
 
     def close(self):
         self._stop = True

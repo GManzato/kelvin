@@ -7,7 +7,6 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.SystemClock
-import android.util.Log
 import org.json.JSONObject
 import java.io.IOException
 
@@ -51,7 +50,6 @@ class FlirCamera(
     private var conn: UsbDeviceConnection? = null
     private var worker: Thread? = null
     private var iapThread: Thread? = null
-    private val cfg = ByteFifo(4096)
 
     fun start() {
         running = true
@@ -97,16 +95,19 @@ class FlirCamera(
 
             diagnostics.record("config_session", "Opening rosebud.config EA protocol 0, session 1")
             link.startEa(PROTOCOL_CONFIG, CONFIG_SESSION)
-            pump(link, 300)
+            val config = ConfigEaReceiver(link.eaSession, CONFIG_SESSION, listener::onEvent) {
+                diagnostics.record("config_protocol_notice", "Received header-only protocol notice (version 1)")
+            }
+            pump(link, config, 300)
             val fileio = intf(1, 1) ?: throw IOException("Fileio interface 1 alternate 1 missing")
             if (!c.setInterface(fileio)) throw IOException("Cannot enable fileio interface")
             diagnostics.record("fileio", "Enabled interface 1 alternate 1")
-            pump(link, 500)
+            pump(link, config, 500)
 
             stage = Stage.STREAMING
             iapThread = Thread({
                 try {
-                    while (running) handleEa(link.poll(50))
+                    while (running) config.accept(link.poll(50))
                 } catch (t: Throwable) {
                     if (running) listener.onError(t, Stage.STREAMING)
                 }
@@ -118,26 +119,9 @@ class FlirCamera(
         }
     }
 
-    private fun pump(link: Iap2Link, ms: Long) {
+    private fun pump(link: Iap2Link, config: ConfigEaReceiver, ms: Long) {
         val end = SystemClock.elapsedRealtime() + ms
-        while (SystemClock.elapsedRealtime() < end) handleEa(link.poll(20))
-    }
-
-    /** Config channel: EA packets carry a 2-byte session id, then RBProtocol config packets. */
-    private fun handleEa(packets: List<Pair<Int, ByteArray>>) {
-        for ((_, p) in packets) {
-            if (p.size <= 2) continue
-            cfg.append(p.copyOfRange(2, p.size), p.size - 2)
-            while (cfg.size >= 16) {
-                if (cfg.u32le(0) != 0x1CCL) { cfg.clear(); break }
-                val len = cfg.u32le(8).toInt()
-                if (cfg.size < 16 + len) break
-                val js = String(cfg.copy(16, len)).trimEnd('\u0000')
-                cfg.drop(16 + len)
-                runCatching { listener.onEvent(JSONObject(js)) }
-                    .onFailure { Log.w(TAG, "bad config json: $js") }
-            }
-        }
+        while (SystemClock.elapsedRealtime() < end) config.accept(link.poll(20))
     }
 
     private fun frameLoop(c: UsbDeviceConnection) {
@@ -145,64 +129,32 @@ class FlirCamera(
         val off = intf(2, 0) ?: throw IOException("Frame interface 2 alternate 0 missing")
         val ep = endpoint(on, UsbConstants.USB_DIR_IN)
         diagnostics.record("frame_transport", "Ready for bulk frames on endpoint 0x%02x".format(ep.address))
-        val rbuf = ByteArray(1 shl 17)
-        val fifo = ByteFifo(1 shl 20)
+        val rbuf = ByteArray(RbProtocolReader.MAX_CHUNK_BYTES)
+        val frames = RbProtocolReader(RbProtocolReader.Channel.FRAME) { packet ->
+            diagnostics.recordFrame(packet.thermalLength, packet.visualLength, packet.metadataLength)
+            listener.onFrame(packet.decodeCameraFrame())
+        }
         var streaming = false
         while (running) {
             if (paused == streaming) {
                 streaming = !paused
                 if (!c.setInterface(if (streaming) on else off)) throw IOException("Cannot switch frame interface")
-                fifo.clear()
+                frames.clear()
                 diagnostics.record("frame_transport", if (streaming) "Enabled; waiting for frame data" else "Paused; alternate 0")
             }
             if (!streaming) { Thread.sleep(100); continue }
             val r = c.bulkTransfer(ep, rbuf, rbuf.size, 500)
             if (r <= 0) continue
-            fifo.append(rbuf, r)
-            while (true) {
-                val i = fifo.indexOf(FRAME_MAGIC)
-                if (i < 0) {
-                    fifo.drop(maxOf(0, fifo.size - 3))
-                    break
-                }
-                fifo.drop(i)
-                if (fifo.size < 28) break
-                val total = fifo.u32le(8)
-                if (total > 4_000_000) { fifo.drop(4); continue }
-                if (fifo.size < 28 + total) break
-                val tLen = fifo.u32le(12).toInt()
-                val jLen = fifo.u32le(16).toInt()
-                val sLen = fifo.u32le(20).toInt()
-                if (tLen < 0 || jLen < 0 || sLen < 0 || tLen.toLong() + jLen + sLen != total) {
-                    throw IOException("Invalid frame lengths: total=$total thermal=$tLen jpeg=$jLen status=$sLen")
-                }
-                diagnostics.recordFrame(tLen, jLen, sLen)
-                val raw = if (tLen == LEPTON_BYTES) IntArray(W * H).also { raw ->
-                    // 63 Lepton VoSPI packets of 164 bytes (2-word id/crc + 80 px LE); rows 0-59 = image
-                    for (y in 0 until H) {
-                        val row = 28 + y * 164 + 4
-                        for (x in 0 until W) raw[y * W + x] = fifo[row + 2 * x] or (fifo[row + 2 * x + 1] shl 8)
-                    }
-                } else null
-                val jpeg = fifo.copy(28 + tLen, jLen)
-                val status = runCatching {
-                    JSONObject(String(fifo.copy(28 + tLen + jLen, sLen)).trimEnd('\u0000'))
-                }.getOrNull()
-                fifo.drop(28 + total.toInt())
-                listener.onFrame(Frame(raw, tLen, jpeg, status))
-            }
+            frames.feed(rbuf, r)
         }
     }
 
     companion object {
-        private const val TAG = "FlirCamera"
         const val VENDOR_ID = 0x09CB
         const val PRODUCT_ID = 0x1996
         const val W = 80
         const val H = 60
-        private const val LEPTON_BYTES = 63 * 164
         private const val PROTOCOL_CONFIG = 0 // com.flir.rosebud.config
         private const val CONFIG_SESSION = 1
-        private val FRAME_MAGIC = byteArrayOf(0xEF.toByte(), 0xBE.toByte(), 0x00, 0x00)
     }
 }

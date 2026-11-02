@@ -2,8 +2,6 @@ package be.apexlab.kelvin
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ByteFifoTest {
@@ -21,38 +19,6 @@ class ByteFifoTest {
         assertArrayEquals(byteArrayOf(10, 20, 30, 40, 50), fifo.copy(0, fifo.size))
     }
 
-    @Test
-    fun frameMarkerSplitAcrossReadsSurvivesCompactionAndGrowth() {
-        val fifo = ByteFifo(2)
-        val magic = byteArrayOf(0xEF.toByte(), 0xBE.toByte(), 0, 0)
-        val firstRead = byteArrayOf(11, 22, 0xEF.toByte(), 0xBE.toByte())
-        fifo.append(firstRead, firstRead.size)
-        assertEquals(-1, fifo.indexOf(magic))
-
-        // Preserve the partial marker while discarding unrelated stream bytes.
-        fifo.drop(2)
-        assertFalse(fifo.startsWith(magic))
-        fifo.append(byteArrayOf(0, 0, 42, 43, 44), 5)
-
-        assertEquals(0, fifo.indexOf(magic))
-        assertTrue(fifo.startsWith(magic))
-        fifo.drop(magic.size)
-        assertArrayEquals(byteArrayOf(42, 43, 44), fifo.copy(0, fifo.size))
-    }
-
-    @Test
-    fun overlappingMarkersAreFoundInStreamOrder() {
-        val fifo = ByteFifo(3)
-        val marker = byteArrayOf(1, 2, 1)
-        fifo.append(byteArrayOf(9, 1, 2, 1, 2, 1, 8), 7)
-        assertEquals(1, fifo.indexOf(marker))
-
-        fifo.drop(2)
-        assertEquals(1, fifo.indexOf(marker))
-        fifo.drop(4)
-        assertEquals(-1, fifo.indexOf(marker))
-        assertArrayEquals(byteArrayOf(8), fifo.copy(0, fifo.size))
-    }
 
     @Test
     fun multibyteFieldsAreUnsignedAndRespectTheirByteOrderAndOffset() {
@@ -65,19 +31,17 @@ class ByteFifoTest {
     }
 
     @Test
-    fun clearingOrDrainingDoesNotExposeMarkersFromPreviousSession() {
+    fun clearingOrDrainingDoesNotExposeBytesFromPreviousSession() {
         val fifo = ByteFifo(8)
-        val oldMarker = byteArrayOf(1, 2, 3)
         fifo.append(byteArrayOf(1, 2, 3, 4, 5), 5)
         fifo.clear()
         fifo.append(byteArrayOf(1, 2), 2)
-        assertEquals(-1, fifo.indexOf(oldMarker))
-        assertFalse(fifo.startsWith(oldMarker))
+        assertEquals(2, fifo.size)
+        assertArrayEquals(byteArrayOf(1, 2), fifo.copy(0, fifo.size))
 
         fifo.drop(100)
         fifo.append(byteArrayOf(7, 8, 9), 3)
         assertEquals(3, fifo.size)
-        assertEquals(-1, fifo.indexOf(oldMarker))
         assertArrayEquals(byteArrayOf(7, 8, 9), fifo.copy(0, fifo.size))
     }
 

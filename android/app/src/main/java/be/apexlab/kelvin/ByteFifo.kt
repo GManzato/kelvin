@@ -1,14 +1,16 @@
 package be.apexlab.kelvin
 
+import java.util.zip.Checksum
+
 /** Growable byte queue: append at the end, consume from the front. */
 class ByteFifo(initialCapacity: Int) {
     private var a = ByteArray(initialCapacity)
     var size = 0
         private set
 
-    fun append(src: ByteArray, len: Int) {
+    fun append(src: ByteArray, len: Int, offset: Int = 0) {
         if (size + len > a.size) a = a.copyOf(maxOf(a.size * 2, size + len))
-        System.arraycopy(src, 0, a, size, len)
+        System.arraycopy(src, offset, a, size, len)
         size += len
     }
 
@@ -26,18 +28,8 @@ class ByteFifo(initialCapacity: Int) {
 
     fun copy(offset: Int, len: Int): ByteArray = a.copyOfRange(offset, offset + len)
 
-    fun startsWith(p: ByteArray): Boolean {
-        if (size < p.size) return false
-        for (i in p.indices) if (a[i] != p[i]) return false
-        return true
-    }
-
-    fun indexOf(p: ByteArray): Int {
-        outer@ for (i in 0..size - p.size) {
-            for (j in p.indices) if (a[i + j] != p[j]) continue@outer
-            return i
-        }
-        return -1
+    fun updateChecksum(checksum: Checksum, offset: Int, len: Int) {
+        checksum.update(a, offset, len)
     }
 
     fun u16be(off: Int): Int = (get(off) shl 8) or get(off + 1)

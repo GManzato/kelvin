@@ -1,6 +1,6 @@
 # Kelvin improvement backlog
 
-Updated 2026-11-02: research baseline Kelvin 0.6 / Android-app 3.6.1; SAFE-01 delivered in Kelvin 0.7.
+Updated 2026-11-02: research baseline Kelvin 0.6 / Android-app 3.6.1; SAFE-01 delivered in 0.7, SAFE-02/03 in 0.8.
 This is the canonical pending-work checklist. `TODO.md` in the local working copy
 keeps historical delivery notes and the private evidence index; it is not published.
 
@@ -24,7 +24,7 @@ owner-approved validation plan.
 
 Suggested execution order:
 
-1. SAFE-02/03 and TEST-01 next: bounded parsers and CI. SAFE-01 is delivered in 0.7.
+1. TEST-01 next: CI for the expanded regression suites. SAFE-01/02/03 are delivered.
 2. SAFE-04/05, DATA-01 through DATA-03 and TEST-02: trustworthy frame admission and replay.
 3. DATA-08, CAL-01 through CAL-04 and IMG-07: safe calibration acquisition and reproducible captures.
 4. Validate controls and calibration, then alignment and compatibility. Run lifecycle/privacy tests alongside them.
@@ -74,9 +74,10 @@ Important limits on those findings:
   Host-side image improvements do not depend on decrypting camera firmware.
 
 Current implementation references: [Thermal.kt], [FlirCamera.kt], [Iap2Link.kt],
+[Iap2Receiver.kt], [RbProtocolReader.kt], [RbJson.kt], [ConfigEaReceiver.kt],
 [CameraController.kt], [Captures.kt], [Timelapse.kt], [Recorder.kt],
-[CompatibilityDiagnostics.kt] and [iap2host.py]. Paths use the current
-`be.apexlab.kelvin` namespace.
+[CompatibilityDiagnostics.kt], [iap2host.py] and [rbprotocol.py]. Paths use the
+current `be.apexlab.kelvin` namespace.
 
 ## 1. Measurement and protocol safety
 
@@ -85,15 +86,16 @@ Current implementation references: [Thermal.kt], [FlirCamera.kt], [Iap2Link.kt],
   - Change delivered: finite validity is independent of saturation; invalid pixels are neutral gray and have no extrema/average/alarm contribution. Live, viewer, compare, timelapse and video handle absent measurements explicitly. Float grids retain NaN, JSON emits null and CSV leaves invalid cells empty without erasing real zero.
   - Verified: 38 JVM tests, 10 Python protocol tests and 7 Android persistence/render/CSV tests passed. Native emulator smoke covered invalid/mixed live views, saved viewer, compare, timelapse and actual MP4 encoding/decoding. No physical-camera accuracy/reconnect claim is added. Existing captures are not retroactively repaired without original raw samples.
 
-- [ ] **SAFE-02 — Bound iAP2 packet and parameter parsing in both ports** — P0, open.
-  - Evidence: **CODE**, Python `parse_params` does not advance on a zero-length TLV; both link receivers need explicit invalid-length/payload-checksum handling. Android already checks TLV bounds and link-header checksums: preserve those protections.
-  - Change: reject malformed/oversized lengths before slicing or consuming, verify applicable payload checksums, and define bounded recovery/error behavior. Keep Android and Python tests independent.
-  - Done when: zero/short/overrun TLVs, corrupt payloads, fragmented headers and sequence wrap terminate deterministically without hangs, unbounded buffers or delivery of corrupt data.
+- [x] **SAFE-02 — Bound iAP2 packet and parameter parsing in both ports** — P0, completed in 0.8.
+  - Before-change evidence: a bounded subprocess reproduced Python's zero-length TLV hang; a corrupt-payload reproducer delivered data, sent an ACK and advanced receive state.
+  - Change delivered: independent Android/Python receivers check both checksums and legal packet lengths, bound retained input, scan linearly and validate complete TLV/control/SYN structures before using them. Bad headers resynchronize; bad payloads discard exactly the trusted header's packet without ACK/state change. Valid fragmentation, retransmission and sequence wrap remain supported.
+  - Verified: both original reproducers now reject safely; independent malformed-input suites pass. Both ports replayed the retained 2,894-byte iAP2 stream (16 data packets), with no live USB calls. See README for cumulative suite counts and receive limits.
 
-- [ ] **SAFE-03 — Validate complete RBProtocol framing** — P0, open.
-  - Evidence: **STATIC/LIVE**, R2 §2 and R6 §3; current `FlirCamera` checks frame totals but does not validate the recorded header CRC/protocol rules. Config parsing currently accepts stripped JSON without proving exact framing.
-  - Change: validate header magic/version, header CRC, bounded lengths, sums and JSON-payload NUL termination before decoding. Handle documented zero-payload protocol notices separately from JSON. FileIO also has a payload CRC; the traced frame header does not provide an image-payload CRC.
-  - Done when: synthetic corruption/truncation/overflow cases fail explicitly or recover according to a documented policy, never become measurements. Do not invent a frame payload checksum or weaken parsing to accommodate unexplained captures.
+- [x] **SAFE-03 — Validate complete RBProtocol framing** — P0, completed in 0.8.
+  - Before-change evidence: actual Android/Python config receive paths accepted bad header CRC, missing NUL and unsupported version; the Python frame path yielded a bad-header-CRC frame.
+  - Change delivered: both independent readers validate channel magic/version/header CRC, unsigned bounded lengths and frame-section sums, strict NUL-terminated UTF-8 JSON with depth/token limits, and negotiated config-session routing. Zero-payload config notices are separate from JSON. FileIO validates its payload CRC and zero-length EOF; the frame format has no image-payload CRC.
+  - Recovery: frame magic search is allowed only between packets; malformed complete candidates fail closed, clear parser state and never become measurements. Config/fileIO bad magic fails explicitly. No checksum is invented and no malformed capture is repaired. Live fileIO/calibration reads remain DATA-08.
+  - Verified: 95 JVM, 82 Python and 12 Android framework tests passed. Both ports replayed 57 retained frames with unchanged decoded sample extrema/section lengths and reproduced the archive exactly. The saved config anomaly is rejected; SAFE-04 remains unresolved. No new device commands, resets, model support or accuracy claim; fresh physical streaming validation is still needed.
 
 - [ ] **SAFE-04 — Resolve the config/frame endpoint-overlap anomaly** — P0, research.
   - Evidence: **LIVE**, R6 §5: config-endpoint reads matched portions of frame-endpoint data before the capture failed. Cause is unresolved; this is not yet a demonstrated Kelvin defect.
@@ -349,3 +351,8 @@ requires appropriate subpixel information and demonstrable reconstruction qualit
 [Recorder.kt]: android/app/src/main/java/be/apexlab/kelvin/Recorder.kt
 [CompatibilityDiagnostics.kt]: android/app/src/main/java/be/apexlab/kelvin/CompatibilityDiagnostics.kt
 [iap2host.py]: iap2host.py
+[Iap2Receiver.kt]: android/app/src/main/java/be/apexlab/kelvin/Iap2Receiver.kt
+[RbProtocolReader.kt]: android/app/src/main/java/be/apexlab/kelvin/RbProtocolReader.kt
+[RbJson.kt]: android/app/src/main/java/be/apexlab/kelvin/RbJson.kt
+[ConfigEaReceiver.kt]: android/app/src/main/java/be/apexlab/kelvin/ConfigEaReceiver.kt
+[rbprotocol.py]: rbprotocol.py

@@ -15,8 +15,8 @@ android {
         applicationId = "be.apexlab.kelvin"
         minSdk = 29
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.7"
+        versionCode = 8
+        versionName = "0.8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["appLabel"] = "Kelvin"
     }
@@ -70,6 +70,8 @@ dependencies {
     implementation("androidx.compose.animation:animation")
     implementation("androidx.activity:activity-compose:1.10.1")
     testImplementation("junit:junit:4.13.2")
+    // JVM packet tests use a real JSON implementation; devices use Android's org.json.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test:core:1.6.1")
